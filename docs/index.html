@@ -1,0 +1,408 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Quad Board</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one column of "sheets" on a paper ground; the hero is the live device itself. */
+:root {
+  --paper: #e8e6df;      /* page ground, the colour of an unlit e-paper panel */
+  --sheet: #f2f1ec;      /* raised surfaces */
+  --ink: #1c1c1e;
+  --ink-2: #55565b;      /* secondary text */
+  --rule: #c9c7bf;
+  --signal: #2b49c9;     /* links, the one accent */
+  --shell: #f7f7f5;      /* device housing */
+  --shell-edge: #cfd0cc;
+  --code-bg: #1c1c1e;
+  --code-fg: #e8e6df;
+  --f-display: "Barlow Condensed", "Arial Narrow", "Roboto Condensed", sans-serif;
+  --f-body: "Barlow", "Segoe UI", system-ui, sans-serif;
+  --f-mono: "JetBrains Mono", ui-monospace, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #17181a; --sheet: #1f2023; --ink: #e9e7e0; --ink-2: #a3a39e; --rule: #34353a;
+    --signal: #8ea2ff; --shell: #2a2b2e; --shell-edge: #3b3c40; --code-bg: #0e0f10; --code-fg: #e8e6df;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #17181a; --sheet: #1f2023; --ink: #e9e7e0; --ink-2: #a3a39e; --rule: #34353a;
+  --signal: #8ea2ff; --shell: #2a2b2e; --shell-edge: #3b3c40; --code-bg: #0e0f10; --code-fg: #e8e6df;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--paper); color: var(--ink); font: 400 1.0625rem/1.6 var(--f-body); margin: 0; padding-inline: 16px; padding-block: 0; }
+a { color: var(--signal); text-underline-offset: 3px; }
+a:focus-visible, button:focus-visible { outline: 2px solid var(--signal); outline-offset: 3px; }
+.wrap { max-width: 1080px; margin: 0 auto; }
+h1, h2, h3 { font-family: var(--f-display); font-weight: 700; text-wrap: balance; margin: 0; line-height: 1.02; }
+h2 { font-size: clamp(2rem, 4.5vw, 2.9rem); text-transform: uppercase; letter-spacing: .01em; }
+h3 { font-size: 1.45rem; font-weight: 600; }
+p { margin: 0; }
+.eyebrow { font: 600 .8rem/1 var(--f-display); letter-spacing: .14em; text-transform: uppercase; color: var(--ink-2); }
+section { padding-block: clamp(56px, 9vw, 104px); border-top: 1px solid var(--rule); display: grid; gap: 28px; }
+.lede { max-width: 62ch; color: var(--ink-2); font-size: 1.125rem; }
+
+/* ---------- top bar */
+.bar { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding-block: 18px; font: 600 1rem var(--f-display); letter-spacing: .08em; text-transform: uppercase; }
+.bar nav { display: flex; gap: 20px; flex-wrap: wrap; }
+.bar nav a { color: var(--ink); text-decoration: none; }
+.bar nav a:hover { color: var(--signal); }
+
+/* ---------- hero */
+.hero { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: clamp(28px, 5vw, 64px); align-items: center; padding-block: clamp(24px, 5vw, 56px) clamp(56px, 8vw, 96px); }
+.hero h1 { font-size: clamp(3.6rem, 9vw, 6.4rem); text-transform: uppercase; letter-spacing: -.005em; }
+.hero .copy { display: grid; gap: 22px; min-width: 0; }
+.specs { display: grid; grid-template-columns: auto 1fr; gap: 6px 18px; font: 500 .95rem/1.4 var(--f-mono); color: var(--ink-2); padding-top: 18px; border-top: 1px solid var(--rule); }
+.specs dt { color: var(--ink); }
+.specs dd { margin: 0; }
+.cta { display: flex; gap: 12px; flex-wrap: wrap; }
+.btn { font: 600 1.05rem/1 var(--f-display); letter-spacing: .08em; text-transform: uppercase; padding: 14px 20px; border: 2px solid var(--ink); color: var(--ink); text-decoration: none; background: transparent; }
+.btn.solid { background: var(--ink); color: var(--paper); }
+.btn:hover { border-color: var(--signal); }
+.btn.solid:hover { background: var(--signal); color: var(--paper); }
+
+/* ---------- device */
+.device { position: relative; padding-top: 14px; min-width: 0; }
+.keys { position: absolute; top: 0; left: 9%; right: 9%; display: flex; justify-content: space-between; z-index: 0; }
+.keys .grp { display: flex; gap: 22px; }
+.key { width: 52px; height: 18px; border-radius: 6px 6px 0 0; background: var(--shell-edge); border: 0; cursor: pointer; padding: 0; transition: transform .08s; }
+.key:hover { background: var(--ink-2); }
+.key:active, .key.pressed { transform: translateY(5px); }
+.shell { position: relative; z-index: 1; background: var(--shell); border: 1px solid var(--shell-edge); border-radius: 22px; padding: 4.5% 5% 7%; box-shadow: 0 1px 0 rgba(255,255,255,.6) inset, 0 30px 60px -30px rgba(20,20,25,.45), 0 8px 18px -8px rgba(20,20,25,.25); }
+.glass { position: relative; aspect-ratio: 800 / 480; max-width: 100%; background: #e9e7df; border: 1px solid var(--shell-edge); overflow: hidden; }
+.glass img { position: absolute; inset: 0; width: 100%; height: 100%; display: block; image-rendering: auto; }
+.glass .veil { position: absolute; inset: 0; pointer-events: none; opacity: 0; }
+.brand { position: absolute; left: 0; right: 0; bottom: 2.2%; text-align: center; font: 600 .72rem/1 var(--f-display); letter-spacing: .3em; color: var(--ink-2); text-transform: uppercase; opacity: .7; }
+.keyhint { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-top: 14px; font: 500 .82rem/1.3 var(--f-mono); color: var(--ink-2); }
+.keyhint b { color: var(--ink); font-weight: 500; }
+.dots { display: flex; gap: 6px; }
+.dots button { width: 22px; height: 6px; border: 0; padding: 0; background: var(--rule); cursor: pointer; }
+.dots button[aria-current="true"] { background: var(--ink); }
+
+/* ---------- corners */
+.corners { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border-top: 2px solid var(--ink); border-left: 2px solid var(--ink); }
+.corner { border-right: 2px solid var(--ink); border-bottom: 2px solid var(--ink); padding: 26px clamp(18px, 3vw, 32px) 30px; display: grid; gap: 10px; align-content: start; min-width: 0; background: var(--sheet); }
+.corner .tag { font: 500 .78rem/1 var(--f-mono); color: var(--ink-2); }
+.corner p { color: var(--ink-2); }
+.corner ul { margin: 4px 0 0; padding-left: 1.1em; color: var(--ink-2); }
+.corner li::marker { content: "■  "; font-size: .7em; color: var(--ink); }
+.takeover { font: 500 .95rem/1.5 var(--f-body); color: var(--ink-2); max-width: 70ch; }
+
+/* ---------- pages gallery */
+.pages { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 28px 24px; }
+.page { display: grid; gap: 10px; min-width: 0; background: none; border: 0; padding: 0; text-align: left; color: inherit; font: inherit; cursor: pointer; }
+.page img { width: 100%; max-width: 100%; aspect-ratio: 800/480; border: 1px solid var(--rule); display: block; transition: transform .2s; }
+.page:hover img { transform: translateY(-3px); }
+.page .cap { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
+.page .cap span:first-child { font: 600 1.25rem/1 var(--f-display); text-transform: uppercase; letter-spacing: .03em; }
+.page .cap span:last-child { font: 400 .8rem/1 var(--f-mono); color: var(--ink-2); }
+.page p { color: var(--ink-2); font-size: .97rem; }
+
+/* ---------- how it works */
+.flow { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0; counter-reset: step; }
+.step { padding: 22px 22px 24px 0; border-top: 2px solid var(--ink); display: grid; gap: 8px; align-content: start; min-width: 0; }
+.step + .step { padding-left: 22px; border-left: 1px solid var(--rule); }
+.step::before { counter-increment: step; content: counter(step); font: 700 2.4rem/1 var(--f-display); }
+.step p { color: var(--ink-2); font-size: .97rem; }
+.cadence { overflow-x: auto; }
+.cadence table { border-collapse: collapse; width: 100%; min-width: 560px; font-size: .97rem; }
+.cadence th, .cadence td { text-align: left; padding: 11px 14px 11px 0; border-bottom: 1px solid var(--rule); vertical-align: top; }
+.cadence th { font: 600 .8rem/1 var(--f-display); letter-spacing: .12em; text-transform: uppercase; color: var(--ink-2); }
+.cadence td:first-child { font-weight: 600; white-space: nowrap; }
+.cadence td.n { font-family: var(--f-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* ---------- sources */
+.sources { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr)); gap: 0; border-top: 1px solid var(--rule); }
+.src { padding: 16px 16px 16px 0; border-bottom: 1px solid var(--rule); min-width: 0; }
+.src b { display: block; font: 600 1.1rem/1.2 var(--f-display); letter-spacing: .02em; text-transform: uppercase; }
+.src span { color: var(--ink-2); font-size: .93rem; }
+
+/* ---------- setup */
+.setup { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 28px; }
+.setup .col { display: grid; gap: 14px; align-content: start; min-width: 0; }
+.setup p { color: var(--ink-2); }
+pre { margin: 0; background: var(--code-bg); color: var(--code-fg); font: 400 .86rem/1.65 var(--f-mono); padding: 18px 20px; overflow-x: auto; }
+pre .c { color: #8d8e88; }
+code { font-family: var(--f-mono); font-size: .9em; }
+.hw { margin: 0; padding: 0; list-style: none; display: grid; gap: 8px; }
+.hw li { display: flex; justify-content: space-between; gap: 14px; border-bottom: 1px solid var(--rule); padding-bottom: 8px; }
+.hw li span:last-child { color: var(--ink-2); font-family: var(--f-mono); font-size: .88rem; text-align: right; }
+
+footer { border-top: 2px solid var(--ink); padding-block: 26px 48px; display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; font: 500 .85rem/1.4 var(--f-mono); color: var(--ink-2); }
+
+@media (max-width: 860px) {
+  .hero { grid-template-columns: 1fr; }
+  .flow { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .step:nth-child(3) { padding-left: 0; border-left: 0; }
+  .setup { grid-template-columns: 1fr; }
+}
+@media (max-width: 560px) {
+  .corners { grid-template-columns: 1fr; }
+  .flow { grid-template-columns: 1fr; }
+  .step + .step { padding-left: 0; border-left: 0; }
+  .key { width: 38px; }
+  .keys .grp { gap: 12px; }
+  .bar nav { display: none; }
+}
+@media (prefers-reduced-motion: reduce) { .page img, .key { transition: none; } }
+</style>
+</head><body>
+
+<div class="wrap">
+  <header class="bar">
+    <span>Quad Board</span>
+    <nav>
+      <a href="#corners">Corners</a>
+      <a href="#pages">Pages</a>
+      <a href="#how">How it works</a>
+      <a href="#build">Build one</a>
+      <a class="gh" href="https://github.com/J-Rod-Ay/eink-quad">GitHub</a>
+    </nav>
+  </header>
+
+  <div class="hero">
+    <div class="device" id="device">
+      <div class="keys" aria-label="Device buttons">
+        <button class="key" data-act="home" aria-label="Left button: home, refresh everything"></button>
+        <div class="grp">
+          <button class="key" data-act="prev" aria-label="Middle button: previous page"></button>
+          <button class="key" data-act="next" aria-label="Right button: next page"></button>
+        </div>
+      </div>
+      <div class="shell">
+        <div class="glass">
+          <img id="screen" src="img/quad.png" alt="The quad dashboard: weather, news and markets, sports, and the plane overhead">
+          <div class="veil" id="veil"></div>
+        </div>
+        <div class="brand">reTerminal E1001</div>
+      </div>
+      <div class="keyhint">
+        <span>Press the buttons on top. <b>left</b> home · <b>middle</b> back · <b>right</b> next</span>
+        <div class="dots" id="dots" role="tablist" aria-label="Pages"></div>
+      </div>
+    </div>
+
+    <div class="copy">
+      <span class="eyebrow">E-paper kitchen dashboard</span>
+      <h1>Quad Board</h1>
+      <p class="lede">Four corners of your day on a 7.5-inch e-paper screen: the weather, the news and markets, your teams, and whatever is flying over the house right now. It runs on its own battery and only repaints the corner that changed.</p>
+      <div class="cta">
+        <a class="btn solid gh" href="https://github.com/J-Rod-Ay/eink-quad">Get the code</a>
+        <a class="btn" href="#build">Build one</a>
+      </div>
+      <dl class="specs">
+        <dt>Panel</dt><dd>7.5″ 800×480, 4 grey levels</dd>
+        <dt>Board</dt><dd>Seeed reTerminal E1001, ESP32-S3</dd>
+        <dt>Refresh</dt><dd>~1 s partial per corner, 3.5 s full</dd>
+        <dt>Data</dt><dd>all keyless public APIs</dd>
+      </dl>
+    </div>
+  </div>
+
+  <section id="corners">
+    <span class="eyebrow">The quad</span>
+    <h2>One glance, four answers</h2>
+    <div class="corners">
+      <div class="corner">
+        <span class="tag">top left</span>
+        <h3>Weather</h3>
+        <p>Current conditions, a rain-chance strip for the next few hours and three days ahead.</p>
+        <ul><li>15-minute rain nowcast: “Raining now”, “70% rain by 7p”</li><li>NWS severe alerts take over the message strip</li></ul>
+      </div>
+      <div class="corner">
+        <span class="tag">top right</span>
+        <h3>News &amp; markets</h3>
+        <p>Index moves plus any tickers you pick, over headlines that rotate on every update.</p>
+        <ul><li>WSJ section feeds: world, US, markets, tech</li><li>One Yahoo call covers every ticker</li></ul>
+      </div>
+      <div class="corner">
+        <span class="tag">bottom left</span>
+        <h3>Your teams</h3>
+        <p>Live score, last result or next game for every team you follow, with TV and the line.</p>
+        <ul><li>Any ESPN team: NFL, NBA, NHL, MLB, college</li><li>Refreshes every 3 minutes while a game is on</li></ul>
+      </div>
+      <div class="corner">
+        <span class="tag">bottom right</span>
+        <h3>The plane overhead</h3>
+        <p>Airline, route, aircraft, altitude and which way to look, from live ADS-B.</p>
+        <ul><li>Ranked by how high it sits in your sky, not raw distance</li><li>Counts every flight that passed today</li></ul>
+      </div>
+    </div>
+    <p class="takeover">Above the quad, a strip carries one line: your own pinned message, a severe weather alert, or a sentence from Claude that ties the day together. When the Space Station is about to pass or a rocket is going up within sight, it takes over the plane corner with a countdown and a compass.</p>
+  </section>
+
+  <section id="pages">
+    <span class="eyebrow">Detail pages</span>
+    <h2>Press a button for more</h2>
+    <p class="lede">Each corner opens into a full screen of its own. Detail pages fall back to the quad after a few minutes, so the board never gets stuck on one. Click any of these to send it to the device above.</p>
+    <div class="pages" id="pagegrid"></div>
+  </section>
+
+  <section id="how">
+    <span class="eyebrow">How it works</span>
+    <h2>The screen is dumb on purpose</h2>
+    <p class="lede">A small Python server draws every pixel. The firmware only fetches rectangles and decides how to refresh them, so changing the layout, the cadence or a data source never means reflashing the board.</p>
+    <div class="flow">
+      <div class="step"><h3>Render</h3><p>The server composes the full 800×480 frame with Pillow, using the same fonts and icons you see here.</p></div>
+      <div class="step"><h3>Diff</h3><p>It compares against what is on the glass and keeps only the rectangles that changed.</p></div>
+      <div class="step"><h3>Long-poll</h3><p>The board holds an HTTPS request open. On battery it deep-sleeps between checks instead.</p></div>
+      <div class="step"><h3>Play the reel</h3><p>Changed corners get a ~1 s partial refresh. Every couple of hours a full flash wipes ghosting.</p></div>
+    </div>
+    <div class="cadence">
+      <table>
+        <thead><tr><th>What</th><th>How often</th><th>Refresh</th></tr></thead>
+        <tbody>
+          <tr><td>Every corner</td><td class="n">10 min</td><td>Full, 4 grey levels, anti-aliased text</td></tr>
+          <tr><td>Plane overhead</td><td class="n">as set</td><td>Partial, no flash</td></tr>
+          <tr><td>Live scores</td><td class="n">3 min</td><td>Partial, only while a game is on</td></tr>
+          <tr><td>Ghosting wipe</td><td class="n">120 min</td><td>One flashing full refresh</td></tr>
+          <tr><td>Quiet hours</td><td class="n">e.g. 23–6</td><td>No scheduled updates overnight</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="lede">All of these are knobs on a small web dashboard the server hosts, along with location, feeds, tickers, teams and the corner order.</p>
+  </section>
+
+  <section id="sources">
+    <span class="eyebrow">Data</span>
+    <h2>No API keys</h2>
+    <div class="sources">
+      <div class="src"><b>Open-Meteo</b><span>forecast and 15-minute nowcast</span></div>
+      <div class="src"><b>api.weather.gov</b><span>NWS alerts (US only)</span></div>
+      <div class="src"><b>WSJ RSS</b><span>section headlines</span></div>
+      <div class="src"><b>Yahoo spark</b><span>index and ticker quotes</span></div>
+      <div class="src"><b>ESPN site API</b><span>scores, schedules, lines</span></div>
+      <div class="src"><b>adsb.lol + adsbdb</b><span>aircraft and routes</span></div>
+      <div class="src"><b>CelesTrak + Launch Library</b><span>ISS passes, launches</span></div>
+      <div class="src"><b>Claude (optional)</b><span>the one-line brief, via the <code>claude</code> CLI</span></div>
+    </div>
+  </section>
+
+  <section id="build">
+    <span class="eyebrow">Build one</span>
+    <h2>An afternoon, one board</h2>
+    <div class="setup">
+      <div class="col">
+        <h3>Hardware</h3>
+        <ul class="hw">
+          <li><span>Seeed reTerminal E1001</span><span>7.5″ mono, ESP32-S3</span></li>
+          <li><span>USB-C cable</span><span>for flashing</span></li>
+          <li><span>Any always-on box for the server</span><span>VPS, Pi, NAS</span></li>
+        </ul>
+        <p>The server needs to be reachable over HTTPS from the board, so put it behind nginx or Caddy on a domain you own. Running locally works for previews: <code>python cases.py</code> renders every screen to PNG without any hardware.</p>
+      </div>
+      <div class="col">
+        <h3>Server</h3>
+<pre><span class="c"># Python 3.10+</span>
+cd server
+pip install -r requirements.txt
+cp quad.env.example quad.env  <span class="c"># set tokens</span>
+set -a; . ./quad.env; set +a
+python app.py
+<span class="c"># settings: http://127.0.0.1:8740/?k=$QUAD_ADMIN</span></pre>
+        <h3>Firmware</h3>
+<pre>cd firmware
+cp src/secrets.example.h src/secrets.h  <span class="c"># host + token</span>
+pio run -t upload --upload-port COM9</pre>
+        <p>First boot opens a Wi-Fi setup portal named <code>QuadBoard-XXXX</code>. Join it from your phone and pick your network.</p>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <span>Quad Board · MIT licensed</span>
+    <a class="gh" href="https://github.com/J-Rod-Ay/eink-quad">Source on GitHub</a>
+  </footer>
+</div>
+
+<script>
+(() => {
+  const REPO = "https://github.com/J-Rod-Ay/eink-quad";
+  document.querySelectorAll("a.gh").forEach(a => a.href = REPO);
+
+  const PAGES = [
+    { id: "quad", name: "Quad", note: "home", desc: "The everyday view." },
+    { id: "weather", name: "Weather", note: "24 h + 5 day", desc: "Temperature curve over rain-chance bars, then five days." },
+    { id: "news", name: "News & markets", note: "sparklines", desc: "Intraday sparklines for each ticker and two columns of headlines." },
+    { id: "sports", name: "Scores", note: "last + next", desc: "Last result with a team headline, and the next game with TV, line and win chance." },
+    { id: "sky", name: "Sky above", note: "radar + log", desc: "A radar of everything within 25 nm and a logbook of what flew over." },
+  ];
+  const EXTRA = [
+    { id: "quad-iss", name: "Space Station", note: "takeover", desc: "An ISS pass or a visible launch takes over the plane corner." },
+    { id: "quad-message", name: "Quiet sky", note: "pinned note", desc: "No plane? A mini radar and today's count. A pinned note sits in the strip." },
+  ];
+  const ALL = [...PAGES, ...EXTRA];
+  const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const screen = document.getElementById("screen");
+  const veil = document.getElementById("veil");
+  const dots = document.getElementById("dots");
+  const grid = document.getElementById("pagegrid");
+  const cache = {};
+  ALL.forEach(p => { const i = new Image(); i.src = `img/${p.id}.png`; cache[p.id] = i; });
+
+  let cur = 0, busy = false, auto = null, userTouched = false;
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+  // The UC8179 full refresh: old image inverts, panel goes black, white, new image inverted, then the new image.
+  async function show(id) {
+    if (busy) return;
+    busy = true;
+    const src = `img/${id}.png`;
+    if (!reduce) {
+      screen.style.filter = "invert(1)"; await sleep(130);
+      veil.style.background = "#1c1c1e"; veil.style.opacity = 1; await sleep(160);
+      veil.style.background = "#e9e7df"; await sleep(150);
+      screen.src = src; screen.style.filter = "invert(1)"; veil.style.opacity = 0; await sleep(130);
+      screen.style.filter = "";
+    } else {
+      screen.src = src;
+    }
+    const p = ALL.find(x => x.id === id);
+    screen.alt = `Quad Board screen: ${p.name}`;
+    [...dots.children].forEach((d, i) => d.setAttribute("aria-current", PAGES[i].id === id));
+    busy = false;
+  }
+  function go(i) { cur = (i + PAGES.length) % PAGES.length; show(PAGES[cur].id); }
+
+  PAGES.forEach((p, i) => {
+    const b = document.createElement("button");
+    b.setAttribute("role", "tab"); b.setAttribute("aria-label", p.name);
+    b.setAttribute("aria-current", i === 0);
+    b.onclick = () => { stopAuto(); go(i); };
+    dots.appendChild(b);
+  });
+  ALL.filter(p => p.id !== "quad").forEach(p => {
+    const b = document.createElement("button");
+    b.className = "page";
+    b.innerHTML = `<img src="img/${p.id}.png" alt="${p.name} screen" loading="lazy"><div class="cap"><span>${p.name}</span><span>${p.note}</span></div><p>${p.desc}</p>`;
+    b.onclick = () => {
+      stopAuto();
+      const i = PAGES.findIndex(x => x.id === p.id);
+      if (i >= 0) cur = i;
+      document.getElementById("device").scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "center" });
+      setTimeout(() => show(p.id), reduce ? 0 : 350);
+    };
+    grid.appendChild(b);
+  });
+
+  document.querySelectorAll(".key").forEach(k => k.addEventListener("click", () => {
+    stopAuto();
+    k.classList.add("pressed"); setTimeout(() => k.classList.remove("pressed"), 120);
+    const a = k.dataset.act;
+    if (a === "home") { cur = 0; show("quad"); }
+    else go(cur + (a === "next" ? 1 : -1));
+  }));
+  document.addEventListener("keydown", e => {
+    if (e.target.closest("input, textarea")) return;
+    if (e.key === "ArrowRight") { stopAuto(); go(cur + 1); }
+    if (e.key === "ArrowLeft") { stopAuto(); go(cur - 1); }
+  });
+
+  function stopAuto() { userTouched = true; clearInterval(auto); }
+  if (!reduce) auto = setInterval(() => { if (!userTouched && !document.hidden) go(cur + 1); }, 5200);
+})();
+</script>
+</body></html>

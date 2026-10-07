@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quad Board</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&family=Barlow+Condensed:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#f3f1ec;--card:#fff;--ink:#141414;--mute:#6b6862;--line:#dedad2;--acc:#141414;--ok:#1f7a3a;--bad:#b3261e;--warn:#9a6700}
+@media (prefers-color-scheme: dark){:root{--bg:#131313;--card:#1c1c1c;--ink:#ededed;--mute:#9a968f;--line:#2e2e2e;--acc:#ededed;--ok:#5cc47a;--bad:#ff7a70;--warn:#e0b04a}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 Barlow,system-ui,sans-serif}
+header{display:flex;align-items:center;justify-content:space-between;padding:14px 20px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--bg);z-index:5}
+h1{font:700 22px 'Barlow Condensed',sans-serif;letter-spacing:.02em;margin:0;text-transform:uppercase}
+h2{font:700 15px 'Barlow Condensed',sans-serif;letter-spacing:.06em;text-transform:uppercase;margin:0 0 12px}
+main{max-width:1180px;margin:0 auto;padding:18px 16px 60px;display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:18px}
+@media (max-width:900px){main{grid-template-columns:minmax(0,1fr)}}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px}
+.stack{display:flex;flex-direction:column;gap:18px}
+.screen{width:100%;aspect-ratio:800/480;background:#fff;border-radius:6px;border:1px solid var(--line);image-rendering:pixelated;display:block}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0}
+.chip{font:600 13px 'Barlow Condensed';letter-spacing:.03em;padding:3px 9px;border-radius:99px;border:1px solid var(--line);color:var(--mute)}
+.chip.ok{color:var(--ok);border-color:currentColor}.chip.bad{color:var(--bad);border-color:currentColor}.chip.warn{color:var(--warn);border-color:currentColor}
+button{font:600 14px Barlow;border:1px solid var(--ink);background:var(--ink);color:var(--bg);border-radius:8px;padding:8px 13px;cursor:pointer}
+button.ghost{background:transparent;color:var(--ink);border-color:var(--line)}
+button.ghost.on{border-color:var(--ink);box-shadow:inset 0 0 0 1px var(--ink)}
+button:disabled{opacity:.5}
+label{display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--mute)}
+label.inline{flex-direction:row;align-items:center;gap:8px;color:var(--ink);font-size:14px}
+input,select,textarea{font:15px Barlow;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px 10px;width:100%}
+input[type=checkbox]{width:18px;height:18px;accent-color:var(--ink)}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+@media (max-width:520px){.grid3{grid-template-columns:1fr 1fr}}
+.slots{display:grid;grid-template-columns:1fr 1fr;gap:6px;background:var(--line);padding:6px;border-radius:8px}
+.checks{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:6px 12px;margin:6px 0 10px}
+.note{font-size:13px;color:var(--mute);margin:6px 0 0}
+.brief{font-style:italic;border-left:3px solid var(--ink);padding:4px 10px;margin:8px 0}
+table{width:100%;border-collapse:collapse;font-size:13px}
+td{padding:4px 6px;border-bottom:1px solid var(--line);vertical-align:top}
+td:first-child{font-weight:600;white-space:nowrap}
+.log{max-height:220px;overflow:auto;font:13px/1.5 ui-monospace,Menlo,monospace;color:var(--mute)}
+.thumbs{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
+.thumbs img{width:100%;border:1px solid var(--line);border-radius:4px;cursor:pointer;background:#fff}
+.save{position:sticky;bottom:12px;display:flex;justify-content:flex-end;gap:10px;align-items:center}
+.toast{font-size:13px;color:var(--mute)}
+.hide{display:none}
+</style>
+</head>
+<body>
+<header>
+  <h1>Quad Board</h1>
+  <span class="toast" id="hdr">connecting…</span>
+</header>
+<main>
+  <div class="stack">
+    <section class="card">
+      <img class="screen" id="screen" alt="What the e-paper panel shows right now">
+      <div class="chips" id="chips"></div>
+      <div class="row">
+        <button onclick="act({action:'refresh'})">Refresh now</button>
+        <button class="ghost" onclick="act({action:'full'})" title="Flashing refresh that clears ghosting">Full refresh</button>
+        <span style="flex:1"></span>
+        <span class="row" id="pages"></span>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Message on the board</h2>
+      <div class="row">
+        <input id="stickyText" maxlength="140" placeholder="e.g. Dinner at 7, bring the charger" style="flex:1;min-width:200px">
+        <select id="stickyHours" style="width:auto">
+          <option value="1">1 hour</option><option value="4" selected>4 hours</option>
+          <option value="12">12 hours</option><option value="24">1 day</option><option value="0">until cleared</option>
+        </select>
+        <button onclick="postSticky()">Post</button>
+        <button class="ghost" onclick="act({action:'sticky',text:''})">Clear</button>
+      </div>
+      <p class="note">Shows in the bar under the date, and the LED blinks until someone presses a button.</p>
+    </section>
+
+    <section class="card">
+      <h2>Preview pages</h2>
+      <p class="note">Rendered from the same data the board has. Click one to put it on the panel.</p>
+      <div class="thumbs" id="thumbs"></div>
+    </section>
+
+    <section class="card">
+      <h2>Health</h2>
+      <table id="health"></table>
+      <h2 style="margin-top:16px">Recent activity</h2>
+      <div class="log" id="log"></div>
+    </section>
+  </div>
+
+  <form class="stack" id="form" onsubmit="return false">
+    <section class="card">
+      <h2>Layout</h2>
+      <div class="slots" id="slots"></div>
+      <div class="row" style="margin-top:10px">
+        <label class="inline"><input type="checkbox" name="dark"> Dark mode (white on black)</label>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Timing</h2>
+      <div class="grid3">
+        <label>Update every (min)<input type="number" name="interval_min" min="1" max="120"></label>
+        <label>Plane corner every (min)<input type="number" name="sky_min" min="1" max="120"></label>
+        <label>Full refresh every (min)<input type="number" name="full_every_min" min="0" max="1440"></label>
+        <label>Quiet hours<input name="quiet" placeholder="23-6"></label>
+        <label>Detail page timeout (s)<input type="number" name="page_timeout_s" min="20" max="3600"></label>
+        <label>Live game refresh (min)<input type="number" name="live_min" min="1" max="30"></label>
+      </div>
+      <label class="inline" style="margin-top:10px"><input type="checkbox" name="live_fast"> Refresh scores faster while a team is playing</label>
+      <label class="inline"><input type="checkbox" name="crisp"> Crisp mode: regular updates use a full refresh (brief flash, solid blacks)</label>
+      <label class="inline"><input type="checkbox" name="gray"> Greyscale full refreshes (smooth text, ~6s instead of ~3.5s)</label>
+      <div class="grid3" style="margin-top:8px"><label>Fast updates before a crisp one<input type="number" name="max_partials" min="0" max="50"></label></div>
+      <p class="note">Each update is a partial refresh of only the corners that changed (no flashing). The full refresh flashes once to wipe ghosting. Quiet hours pause updates, e.g. <b>23-6</b>.</p>
+    </section>
+
+    <section class="card">
+      <h2>Weather &amp; location</h2>
+      <div class="grid2">
+        <label>Label<input name="label"></label>
+        <label>City (for the brief)<input name="city"></label>
+        <label>Units<select name="units"><option value="F">°F</option><option value="C">°C</option></select></label>
+        <label>Latitude<input name="lat" type="number" step="0.0001"></label>
+        <label>Longitude<input name="lon" type="number" step="0.0001"></label>
+      </div>
+      <p class="note">Location also moves the plane radar and ISS/launch visibility.</p>
+    </section>
+
+    <section class="card">
+      <h2>News &amp; markets</h2>
+      <div class="checks" id="feeds"></div>
+      <div class="grid3">
+        <label>Max headline age (h)<input type="number" name="max_age_h" min="1" max="96"></label>
+        <label>Pages to rotate<input type="number" name="news_pages" min="1" max="10"></label>
+      </div>
+      <label style="margin-top:10px">Tickers (Yahoo symbols, comma separated)<input name="tickers" placeholder="^GSPC, ^DJI, ^IXIC, SOXL"></label>
+      <p class="note">^GSPC = S&amp;P 500, ^DJI = Dow, ^IXIC = Nasdaq, ^RUT = Russell 2000, ^VIX, BTC-USD. Four or five fit best.</p>
+      <label class="inline" style="margin-top:12px"><input type="checkbox" name="llm_brief"> Claude writes a one-line daily brief (top bar)</label>
+      <div class="grid2" style="margin-top:8px">
+        <label>Rewrite every (min)<input type="number" name="llm_brief_min" min="15" max="720"></label>
+        <label>Model<input name="llm_model"></label>
+      </div>
+      <div class="brief" id="briefText"></div>
+      <button type="button" class="ghost" onclick="act({action:'brief'})">Regenerate brief now</button>
+    </section>
+
+    <section class="card">
+      <h2>Sports</h2>
+      <div class="checks" id="teams"></div>
+      <div class="grid2">
+        <label>Show next game if within (days)<input type="number" name="horizon_days" min="1" max="120"></label>
+      </div>
+      <label class="inline" style="margin-top:8px"><input type="checkbox" name="show_idle"> Show teams with nothing scheduled</label>
+      <label class="inline"><input type="checkbox" name="sports_logos"> Team logos</label>
+      <label class="inline"><input type="checkbox" name="odds"> Betting odds (DraftKings, via ESPN)</label>
+      <div class="grid2" style="margin-top:6px"><label>Odds shown in the corner<select name="odds_style">
+        <option value="spread">Point spread (TB -1.5)</option><option value="moneyline">Moneyline (TB -115)</option>
+        <option value="winpct">Win chance (53% to win)</option></select></label></div>
+    </section>
+
+    <section class="card">
+      <h2>Sky</h2>
+      <div class="grid2">
+        <label>Radar radius (nm)<input type="number" name="radar_nm" min="5" max="80"></label>
+      </div>
+      <label class="inline" style="margin-top:8px"><input type="checkbox" name="iss"> Space Station passes (30 min heads-up, visible passes only)</label>
+      <label class="inline"><input type="checkbox" name="launch"> Cape Canaveral launches you can see from here</label>
+    </section>
+
+    <section class="card">
+      <h2>Notes from the note box</h2>
+      <label class="inline"><input type="checkbox" name="notes"> Show notes sent to the note box (animated, then back to the board)</label>
+      <label class="inline"><input type="checkbox" name="chime"> Chime when one arrives</label>
+      <div class="grid2" style="margin-top:8px">
+        <label>Keep a note up for (min)<input type="number" name="note_minutes" min="1" max="240"></label>
+      </div>
+      <p class="note" id="notesNote"></p>
+    </section>
+
+    <div class="save">
+      <span class="toast" id="saved"></span>
+      <button type="button" onclick="save()">Save settings</button>
+    </div>
+  </form>
+</main>
+<script>
+const qs = new URLSearchParams(location.search);
+let K = qs.get('k'); try { if (K) localStorage.setItem('quadk', K); else K = localStorage.getItem('quadk'); } catch (e) {}
+const base = location.pathname.replace(/\/?(index\.html)?$/, '');
+const api = (p) => `${base}${p}${p.includes('?') ? '&' : '?'}k=${encodeURIComponent(K || '')}`;
+let S = null, lastV = -1, dirty = false;
+const PAGE_NAMES = {quad:'Quad', weather:'Weather', news:'News', sports:'Sports', sky:'Sky'};
+
+async function act(body) {
+  const r = await fetch(api('/api/action'), {method:'POST', body: JSON.stringify(body)});
+  const j = await r.json(); if (j.error) alert(j.error);
+  setTimeout(poll, 300);
+}
+function postSticky() {
+  act({action:'sticky', text: document.getElementById('stickyText').value, hours: +document.getElementById('stickyHours').value});
+}
+function ago(s) { if (s == null) return 'never'; if (s < 90) return s + 's ago'; if (s < 5400) return Math.round(s/60) + 'm ago'; return Math.round(s/3600) + 'h ago'; }
+function hm(t) { return t ? new Date(t*1000).toLocaleTimeString([], {hour:'numeric', minute:'2-digit'}) : '—'; }
+
+function fillForm(cfg) {
+  const f = document.getElementById('form');
+  for (const el of f.elements) {
+    if (!el.name || !(el.name in cfg)) continue;
+    const v = cfg[el.name];
+    if (el.type === 'checkbox') el.checked = !!v;
+    else el.value = Array.isArray(v) ? v.join(', ') : v;
+  }
+  const slots = document.getElementById('slots'); slots.innerHTML = '';
+  ['Top left','Top right','Bottom left','Bottom right'].forEach((lab, i) => {
+    const s = document.createElement('select'); s.dataset.slot = i; s.title = lab;
+    for (const p of S.panels) { const o = document.createElement('option'); o.value = p; o.textContent = `${lab}: ${p}`; s.appendChild(o); }
+    s.value = cfg.slots[i]; s.onchange = () => { dirty = true; };
+    slots.appendChild(s);
+  });
+  const mk = (id, map, chosen, name) => {
+    const box = document.getElementById(id); box.innerHTML = '';
+    for (const [k, lab] of Object.entries(map)) {
+      const l = document.createElement('label'); l.className = 'inline';
+      l.innerHTML = `<input type="checkbox" data-list="${name}" value="${k}" ${chosen.includes(k) ? 'checked' : ''}> ${lab}`;
+      box.appendChild(l);
+    }
+  };
+  mk('feeds', Object.fromEntries(Object.entries(S.feeds).map(([k,v]) => [k, 'WSJ ' + v])), cfg.feeds, 'feeds');
+  mk('teams', S.teams, cfg.teams, 'teams');
+}
+
+function collect() {
+  const f = document.getElementById('form'), out = {};
+  for (const el of f.elements) {
+    if (!el.name) continue;
+    out[el.name] = el.type === 'checkbox' ? el.checked : el.value;
+  }
+  out.tickers = out.tickers.split(',').map(s => s.trim()).filter(Boolean);
+  out.slots = [...document.querySelectorAll('#slots select')].map(s => s.value);
+  for (const name of ['feeds', 'teams'])
+    out[name] = [...document.querySelectorAll(`input[data-list=${name}]:checked`)].map(e => e.value);
+  return out;
+}
+
+async function save() {
+  const r = await fetch(api('/api/config'), {method:'POST', body: JSON.stringify(collect())});
+  const j = await r.json();
+  document.getElementById('saved').textContent = j.error ? 'Error: ' + j.error : 'Saved ' + new Date().toLocaleTimeString();
+  if (!j.error) { dirty = false; S.cfg = j.cfg; setTimeout(poll, 400); loadThumbs(); }
+}
+document.getElementById('form').addEventListener('input', () => { dirty = true; document.getElementById('saved').textContent = 'Unsaved changes'; });
+
+function loadThumbs() {
+  const t = document.getElementById('thumbs'); t.innerHTML = '';
+  for (const p of ['weather','news','sports','sky']) {
+    const img = new Image(); img.src = api(`/api/preview.png?page=${p}&t=${Date.now()}`); img.alt = p; img.title = 'Show ' + p + ' on the board';
+    img.onclick = () => act({action:'page', page:p}); t.appendChild(img);
+  }
+}
+
+function render() {
+  const d = S.device;
+  const chips = [];
+  const age = d.age_s;
+  chips.push(age != null && age < 90 ? ['ok', 'Device online'] : ['bad', 'Device offline · last ' + ago(age)]);
+  if (d.in_sync === false && age != null && age < 90) chips.push(['warn', 'Updating…']);
+  if (d.t != null) chips.push(['', `Inside ${(d.t*9/5+32).toFixed(0)}°F ${d.rh != null ? d.rh.toFixed(0)+'%' : ''}`]);
+  if (d.battery != null) chips.push([d.battery < 20 ? 'bad' : '', `Battery ${d.battery}% (${d.vbat?.toFixed(2)}V)`]);
+  if (d.rssi != null) chips.push(['', `Wi-Fi ${d.rssi} dBm`]);
+  chips.push(['', `Page: ${PAGE_NAMES[S.page] || S.page}`]);
+  if (S.note) chips.push(['warn', `Showing a note from ${S.note}`]);
+  if (S.quiet_now) chips.push(['warn', 'Quiet hours']);
+  chips.push(['', `Updated ${hm(S.updated)}`]);
+  document.getElementById('chips').innerHTML = chips.map(([c, t]) => `<span class="chip ${c}">${t}</span>`).join('');
+  document.getElementById('pages').innerHTML = Object.entries(PAGE_NAMES).map(([k, v]) =>
+    `<button type="button" class="ghost ${S.page === k ? 'on' : ''}" onclick="act({action:'page',page:'${k}'})">${v}</button>`).join('');
+  document.getElementById('hdr').textContent = `v${S.version} · ${S.cfg.label}`;
+  document.getElementById('briefText').textContent = S.sources.brief.text || (S.cfg.llm_brief ? 'No brief yet' : 'Brief is off');
+  if (!document.activeElement || document.activeElement.id !== 'stickyText') document.getElementById('stickyText').value = S.sticky || '';
+  document.getElementById('notesNote').textContent = S.notes_available ? 'Connected to the note box inbox. Left button hearts a note, any other button dismisses it.' : 'Note box inbox not found on this server.';
+  const rows = [];
+  const src = S.sources;
+  const st = (o) => o ? (o.error ? `<span style="color:var(--bad)">${o.error}</span> (last ok ${ago(o.age_s)})` : `ok · ${ago(o.age_s)}`) : '—';
+  rows.push(['Weather', st(src.weather)], ['NWS alerts', st(src.alerts)], ['Quotes', st(src.quotes)]);
+  for (const [k, v] of Object.entries(src.news)) rows.push(['WSJ ' + (S.feeds[k] || k), st(v)]);
+  for (const [k, v] of Object.entries(src.sports)) rows.push([S.teams[k] || k, st(v)]);
+  rows.push(['Plane feed', st(src.sky)], ['Claude brief', st(src.brief)]);
+  if (src.events && src.events.upcoming && src.events.upcoming.length)
+    rows.push(['Next sky event', src.events.upcoming.map(e => `${e.title} in ${Math.round(e.in_s/3600)}h (${e.confidence})`).join('<br>')]);
+  rows.push(['Render', `${S.render_ms} ms · cycle ${S.cycle}`], ['Device', `${d.polls} polls · ${d.boots} boots · on v${d.version}`]);
+  document.getElementById('health').innerHTML = rows.map(([a, b]) => `<tr><td>${a}</td><td>${b}</td></tr>`).join('');
+  document.getElementById('log').innerHTML = S.log.map(([t, s]) => `${hm(t)}  ${s}`).join('<br>');
+}
+
+async function poll() {
+  try {
+    const r = await fetch(api('/api/state'));
+    if (!r.ok) { document.getElementById('hdr').textContent = 'Not authorised: open with ?k=<token>'; return; }
+    const first = !S;
+    S = await r.json();
+    if (first || !dirty) fillForm(S.cfg);
+    if (first) loadThumbs();
+    if (S.version !== lastV) { lastV = S.version; document.getElementById('screen').src = api(`/api/screen.png?v=${S.version}`); }
+    render();
+  } catch (e) { document.getElementById('hdr').textContent = 'offline'; }
+}
+poll(); setInterval(poll, 5000);
+</script>
+</body>
+</html>
