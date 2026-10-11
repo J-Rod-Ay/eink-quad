@@ -6,7 +6,7 @@ An e-paper kitchen dashboard for the Seeed reTerminal E1001. Four corners of you
 
 **[See the project page →](https://j-rod-ay.github.io/eink-quad/)**
 
-🖥️ **The screen: [Seeed reTerminal E1001 on Amazon](https://link.amazon/B02crJEwy)** — 7.5″ 800×480 mono e-paper, ESP32-S3, battery. *(affiliate link)*
+🖥️ **The screen: [Seeed reTerminal E1001 on Amazon](https://link.amazon/B0gH6ekeP)** — 7.5″ 800×480 mono e-paper, ESP32-S3, battery. *(affiliate link)*
 
 ## What's on it
 
@@ -45,7 +45,7 @@ All keyless: Open-Meteo (forecast + nowcast), api.weather.gov (alerts, US only),
 ## Setup
 
 ### Hardware
-- **[Seeed reTerminal E1001](https://link.amazon/B02crJEwy)** — 7.5" 800×480 mono e-paper, ESP32-S3 *(affiliate link; also at [Seeed](https://www.seeedstudio.com/))*
+- **[Seeed reTerminal E1001](https://link.amazon/B0gH6ekeP)** — 7.5" 800×480 mono e-paper, ESP32-S3 *(affiliate link; also at [Seeed](https://www.seeedstudio.com/))*
 - An always-on machine for the server (VPS, Raspberry Pi, NAS), reachable from the board over **HTTPS**. Put it behind nginx or Caddy. The firmware doesn't verify certificates, so a self-signed one works too.
 
 ### Server
