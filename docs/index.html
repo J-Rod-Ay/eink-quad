@@ -63,6 +63,13 @@ section { padding-block: clamp(56px, 9vw, 104px); border-top: 1px solid var(--ru
 .btn.solid { background: var(--ink); color: var(--paper); }
 .btn:hover { border-color: var(--signal); }
 .btn.solid:hover { background: var(--signal); color: var(--paper); }
+.btn.buy { background: var(--signal); border-color: var(--signal); color: var(--paper); }
+.btn.buy:hover { background: var(--ink); border-color: var(--ink); color: var(--paper); }
+.aff { color: var(--signal); text-decoration: none; border-bottom: 1px solid currentColor; }
+.buybox { margin: 18px 0 0; padding: 16px 18px; background: var(--sheet); border: 2px solid var(--signal); display: grid; gap: 12px; justify-items: start; }
+.buybox p { margin: 0; font-size: .95rem; }
+.buybox .btn { padding: 11px 16px; font-size: .95rem; }
+.disclosure { flex-basis: 100%; }
 
 /* ---------- device */
 .device { position: relative; padding-top: 14px; min-width: 0; }
@@ -191,11 +198,12 @@ footer { border-top: 2px solid var(--ink); padding-block: 26px 48px; display: fl
       <p class="lede">Four corners of your day on a 7.5-inch e-paper screen: the weather, the news and markets, your teams, and whatever is flying over the house right now. It runs on its own battery and only repaints the corner that changed.</p>
       <div class="cta">
         <a class="btn solid gh" href="https://github.com/J-Rod-Ay/eink-quad">Get the code</a>
+        <a class="btn buy" href="https://link.amazon/B02crJEwy" rel="sponsored noopener" target="_blank">Buy the display</a>
         <a class="btn" href="#build">Build one</a>
       </div>
       <dl class="specs">
         <dt>Panel</dt><dd>7.5″ 800×480, 4 grey levels</dd>
-        <dt>Board</dt><dd>Seeed reTerminal E1001, ESP32-S3</dd>
+        <dt>Board</dt><dd><a class="aff" href="https://link.amazon/B02crJEwy" rel="sponsored noopener" target="_blank">Seeed reTerminal E1001</a>, ESP32-S3</dd>
         <dt>Refresh</dt><dd>~1 s partial per corner, 3.5 s full</dd>
         <dt>Data</dt><dd>all keyless public APIs</dd>
       </dl>
@@ -288,10 +296,14 @@ footer { border-top: 2px solid var(--ink); padding-block: 26px 48px; display: fl
       <div class="col">
         <h3>Hardware</h3>
         <ul class="hw">
-          <li><span>Seeed reTerminal E1001</span><span>7.5″ mono, ESP32-S3</span></li>
+          <li><span><a class="aff" href="https://link.amazon/B02crJEwy" rel="sponsored noopener" target="_blank">Seeed reTerminal E1001</a></span><span>7.5″ mono, ESP32-S3</span></li>
           <li><span>USB-C cable</span><span>for flashing</span></li>
           <li><span>Any always-on box for the server</span><span>VPS, Pi, NAS</span></li>
         </ul>
+        <div class="buybox">
+          <p><b>The screen:</b> Seeed reTerminal E1001 — 7.5″ 800×480 mono e-paper with an ESP32-S3 and a battery, the one board this whole project is built around.</p>
+          <a class="btn buy" href="https://link.amazon/B02crJEwy" rel="sponsored noopener" target="_blank">Get it on Amazon</a>
+        </div>
         <p>The server needs to be reachable over HTTPS from the board, so put it behind nginx or Caddy on a domain you own. Running locally works for previews: <code>python cases.py</code> renders every screen to PNG without any hardware.</p>
       </div>
       <div class="col">
@@ -315,6 +327,7 @@ pio run -t upload --upload-port COM9</pre>
   <footer>
     <span>Quad Board · MIT licensed</span>
     <a class="gh" href="https://github.com/J-Rod-Ay/eink-quad">Source on GitHub</a>
+    <span class="disclosure">The display links are Amazon affiliate links — buying through them supports this project at no extra cost to you.</span>
   </footer>
 </div>
 
