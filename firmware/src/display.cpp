@@ -163,4 +163,19 @@ void drawMessage(const char *title, const MsgLine *lines, int n,
   full();
 }
 
+void badge(const char *text) {
+  epaper.setFreeFont(&FreeSansBold12pt7b);
+  const int h = 36, pad = 14;
+  int w = epaper.textWidth(text) + 2 * pad;
+  int x1 = W - 8, y1 = H - 8;
+  int x0 = (x1 - w) & ~7, y0 = y1 - h;
+  epaper.fillRect(x0 - 4, y0 - 4, x1 - x0 + 8, h + 8, TFT_WHITE);
+  epaper.fillRoundRect(x0, y0, x1 - x0, h, 10, TFT_BLACK);
+  epaper.setTextColor(TFT_WHITE, TFT_BLACK, true);
+  epaper.setTextDatum(ML_DATUM);
+  epaper.drawString(text, x0 + pad, y0 + h / 2);
+  epaper.setTextDatum(TL_DATUM);
+  partial(x0 - 4, y0 - 4, x1 + 4, y1 + 4);
+}
+
 }  // namespace display

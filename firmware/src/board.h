@@ -29,5 +29,11 @@
 #define I2C_SCL_PIN 20
 #define SHT4X_ADDR  0x44
 
+// Charger: board v1.2 (Nov 2025) has a Silergy SY6974B on a second I2C bus;
+// v1.0 has an ETA6003 with no bus at all. Read-only use, see sensors.cpp.
+#define CHG_SDA_PIN  39
+#define CHG_SCL_PIN  40
+#define CHARGER_ADDR 0x6B
+
 #define BATT_ADC_PIN    1
 #define BATT_ENABLE_PIN 21

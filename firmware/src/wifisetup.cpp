@@ -52,7 +52,9 @@ const char PAGE_HEAD[] PROGMEM =
     "button{background:#111;color:#fff;border:0;font-weight:600}"
     "label{font-size:14px;color:#888}"
     "</style></head><body>"
-    "<h1>Note box</h1><p>Choose the Wi-Fi network this display should use.</p>"
+    "<h1>Quad board</h1><p>Choose the Wi-Fi network this display should use. "
+    "It only works with 2.4&nbsp;GHz Wi-Fi: if your network isn't listed, it may "
+    "be 5&nbsp;GHz-only (many routers can turn on a 2.4&nbsp;GHz band).</p>"
     "<form method=POST action=/save>";
 
 const char PAGE_TAIL[] PROGMEM =

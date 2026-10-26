@@ -355,6 +355,27 @@ def quotes(cfg, force=False) -> list[Quote]:
     return [got[s] for s in syms if s in got]
 
 
+# ============================================================ calendar (busy times)
+
+import calendar_ics  # noqa: E402
+
+_calendar = Cached(300)
+
+
+def busy_times(cfg, force=False):
+    urls = calendar_ics.urls_from_env()
+    if not urls:
+        return []
+
+    def fetch_calendar():
+        return calendar_ics.fetch(urls, titles=bool(cfg.get("calendar_titles")))
+    return _calendar.get(fetch_calendar, force) or []
+
+
+def calendar_status():
+    return {**_calendar.status(), "configured": bool(calendar_ics.urls_from_env())}
+
+
 def quotes_status():
     return _quotes.status()
 
@@ -749,7 +770,9 @@ def brief(cfg, heads, wx, games, force=False) -> str:
             f"{w}\nSports: {g}\nHeadlines:\n" + "\n".join(lines))
         env = dict(os.environ)
         out = subprocess.run(
-            ["claude", "-p", prompt, "--strict-mcp-config", "--model", cfg.get("llm_model", "claude-haiku-4-5-20251001")],
+            # --tools "": no tools at all. The prompt carries headlines from the internet, so the
+            # model must only be able to answer with text, never run or read anything.
+            ["claude", "-p", prompt, "--tools", "", "--strict-mcp-config", "--model", cfg.get("llm_model", "claude-haiku-4-5-20251001")],
             capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL, env=env,
             cwd=os.path.join(HERE, "cache"))
         txt = (out.stdout or "").strip().splitlines()

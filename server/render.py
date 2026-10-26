@@ -328,6 +328,8 @@ class Ctx:
     heads: list = field(default_factory=list)
     quotes: list = field(default_factory=list)
     teams: list = field(default_factory=list)
+    busy: list = field(default_factory=list)      # calendar_ics.Busy, sorted
+    calendar_set: bool = True     # QUAD_CALENDAR_ICS is configured
     featured: object = None       # sky Sighting
     recent: list = field(default_factory=list)
     day_count: int = 0
@@ -339,6 +341,8 @@ class Ctx:
     indoor_f: float | None = None
     indoor_rh: float | None = None
     battery: int | None = None
+    rssi: int | None = None       # the board's Wi-Fi signal, dBm, from its last poll
+    charging: str | None = None   # "charging" | "charged" | "on USB" | None (on battery)
     on_usb: bool = True
     cycle: int = 0                # increments every scheduled update (rotations)
     updated: float = 0.0
@@ -467,17 +471,18 @@ def _rain_bars(d, hourly, now, x0, x1, y0, y1):
 def _quote_cell(d, x, y, cw, q, spark_h=0, c=None):
     fname = F("cm", 15)
     text(d, (x + cw / 2, y), ellipsize(d, q.name, fname, cw - 4), fname, anchor="ma")
-    pct = q.chg_pct
-    s = f"{abs(pct):.2f}%"
-    f = F("cb", 20)
-    wv = tw(d, s, f) + 13
-    sx = x + (cw - wv) / 2
-    if abs(pct) >= 0.005:
-        tri(d, sx, y + 23, 9, pct > 0)
-    text(d, (sx + 13, y + 17), s, f)
+    # price first, in bold; the day's change under it, with its arrow
     p = q.price
     ps = f"{p:,.0f}" if p >= 1000 else f"{p:,.2f}"
-    text(d, (x + cw / 2, y + 40), ps, F("cr", 15), anchor="ma")
+    text(d, (x + cw / 2, y + 17), ps, F("cb", 20), anchor="ma")
+    pct = q.chg_pct
+    s = f"{abs(pct):.2f}%"
+    f = F("cr", 15)
+    wv = tw(d, s, f) + 11
+    sx = x + (cw - wv) / 2
+    if abs(pct) >= 0.005:
+        tri(d, sx, y + 44, 7, pct > 0)
+    text(d, (sx + 11, y + 40), s, f)
     if spark_h and q.spark and len(q.spark) > 2:
         sy0, sy1 = y + 60, y + 60 + spark_h
         lo, hi = min(q.spark + [q.prev]), max(q.spark + [q.prev])
@@ -793,10 +798,148 @@ def _event_card(c, d, ctx, size):
     return c
 
 
-PANELS = {"weather": panel_weather, "news": panel_news, "sports": panel_sports, "sky": panel_sky}
+def _day_start(ts):
+    t = time.localtime(ts)
+    return time.mktime((t.tm_year, t.tm_mon, t.tm_mday, 0, 0, 0, 0, 0, -1))
+
+
+def _busy_on(ctx, day0, day1):
+    return [b for b in ctx.busy if b.start < day1 and b.end > day0]
+
+
+def _mins(n):
+    n = int(round(n / 60))
+    return f"{n} min" if n < 60 else f"{n // 60} h" + (f" {n % 60} min" if n % 60 else "")
+
+
+def _booked(blocks, a, b):
+    """Seconds of [a, b) covered by timed blocks, overlaps counted once."""
+    total, end = 0, a
+    for x in sorted((x for x in blocks if not x.all_day), key=lambda x: x.start):
+        s, e = max(x.start, end, a), min(x.end, b)
+        if e > s:
+            total += e - s
+        end = max(end, min(x.end, b))
+    return total
+
+
+def _now_line(blocks, now):
+    """The headline: what's on now, or when the next busy block starts."""
+    timed = [x for x in blocks if not x.all_day and x.end > now]
+    cur = [x for x in timed if x.start <= now]
+    if cur:
+        until = max(x.end for x in cur)
+        # back-to-back blocks run on; say when the busy stretch really ends
+        for x in sorted(timed, key=lambda x: x.start):
+            if x.start <= until:
+                until = max(until, x.end)
+        return f"{cur[0].label} until {hm(until)}"
+    if timed:
+        nxt = min(timed, key=lambda x: x.start)
+        return f"Next: {hm(nxt.start)} · in {_mins(nxt.start - now)}"
+    return None
+
+
+def _busy_row(d, x, y, w, b, now, f_time, f_label, day0):
+    """One block: "9:30 – 11:00  Busy", with NOW / SOON / all-day markers. Returns the row height."""
+    if b.all_day:
+        x2 = pill(d, x, y + 1, "ALL DAY", F("cb", 13), pad=4, h=19) + 8
+        text(d, (x2, y), ellipsize(d, b.label, f_label, x + w - x2), f_label)
+        return 25
+    t0 = max(b.start, day0)
+    s = f"{hm(t0, False)} – {hm(b.end, False)}"
+    x2 = x
+    if b.start <= now < b.end:
+        x2 = pill(d, x, y + 1, "NOW", F("cb", 13), pad=4, h=19) + 7
+    elif 0 < b.start - now <= 15 * 60:
+        # starting within 15 minutes: an outlined marker, quieter than NOW
+        f = F("cb", 13)
+        pw = tw(d, "SOON", f) + 8
+        d.rounded_rectangle((x, y + 1, x + pw, y + 20), radius=4, outline=INK, width=2)
+        text(d, (x + 4, y + 3), "SOON", f)
+        x2 = x + pw + 7
+    text(d, (x2, y), s, f_time)
+    lx = max(x + 132, x2 + tw(d, s, f_time) + 10)
+    text(d, (lx, y), ellipsize(d, b.label, f_label, x + w - lx), f_label)
+    return 25
+
+
+def panel_calendar(ctx: Ctx, size):
+    """Busy times for the rest of today, then tomorrow, as many as fit."""
+    c, d = canvas(size)
+    w, h = size
+    now = ctx.now
+    if not ctx.calendar_set:
+        text(d, (w / 2, h / 2), "No calendar set up", F("m", 17), anchor="mm")
+        return c
+    ft, fl, fh = F("cb", 18), F("m", 17), F("cb", 15)
+    today0 = _day_start(now)
+    tom0 = _day_start(today0 + 36 * 3600)
+    tom1 = _day_start(tom0 + 36 * 3600)
+    y = 6
+    today = _busy_on(ctx, today0, tom0)
+    rest = [b for b in today if b.end > now]
+    text(d, (12, y), "TODAY", fh)
+    booked = _booked(today, today0, tom0)
+    summary = []
+    if booked:
+        summary.append(f"{_mins(booked)} booked")
+    timed_rest = [b for b in rest if not b.all_day]
+    if timed_rest:
+        summary.append(f"free after {hm(max(b.end for b in timed_rest), False)}")
+    if summary:
+        text(d, (w - 12, y), " · ".join(summary), F("cm", 15), anchor="ra")
+    y += 21
+    line = _now_line(today, now)
+    if line:
+        text(d, (12, y), ellipsize(d, line, F("sb", 18), w - 24), F("sb", 18))
+        y += 25
+    if rest:
+        for b in rest:
+            if y + 25 > h - 52:
+                text(d, (12, y), f"+{len(rest) - rest.index(b)} more", F("cm", 15))
+                y += 21
+                break
+            y += _busy_row(d, 12, y, w - 24, b, now, ft, fl, today0)
+    else:
+        text(d, (12, y), "Free the rest of the day", F("sb", 17))
+        y += 25
+    y += 4
+    dotted(d, 10, w - 10, int(y), 3)
+    y += 6
+    nxt = _busy_on(ctx, tom0, tom1)
+    text(d, (12, y), time.strftime("%A", time.localtime(tom0)).upper(), fh)
+    y += 21
+    if not nxt:
+        text(d, (12, y), "Nothing booked", F("sb", 17))
+    for i, b in enumerate(nxt):
+        if y + 25 > h - 4:
+            text(d, (w - 10, h - 4), f"+{len(nxt) - i} more", F("cm", 14), anchor="rd")
+            break
+        y += _busy_row(d, 12, y, w - 24, b, now, ft, fl, tom0)
+    return c
+
+
+PANELS = {"weather": panel_weather, "news": panel_news, "sports": panel_sports, "calendar": panel_calendar,
+          "sky": panel_sky}
 
 
 # ================================================================== chrome
+
+def wifi_level(rssi):
+    """0-3 arcs, the usual phone-style thresholds."""
+    return 3 if rssi >= -60 else 2 if rssi >= -70 else 1 if rssi >= -80 else 0
+
+
+def wifi_glyph(d, x, base, rssi):
+    """A Wi-Fi fan, 26 px wide, its point at (x + 13, base). Arcs above the signal level are
+    drawn hairline, so the shape stays recognisable even at one bar."""
+    cx, lvl = x + 13, wifi_level(rssi)
+    d.ellipse((cx - 2, base - 2, cx + 2, base + 2), fill=PAPER)
+    for i, r in enumerate((6, 11, 16), start=1):
+        strong = lvl >= i
+        d.arc((cx - r, base - r, cx + r, base + r), 225, 315, fill=PAPER, width=3 if strong else 1)
+
 
 def header(ctx: Ctx):
     c, d = canvas((W, HEAD_H))
@@ -804,7 +947,7 @@ def header(ctx: Ctx):
     t = time.localtime(ctx.now)
     date = time.strftime("%A, %B ", t) + str(t.tm_mday)
     text(d, (14, HEAD_H / 2), date, F("sb", 22), fill=PAPER, anchor="lm")
-    # right side, laid out right-to-left: updated time, battery, indoor
+    # right side, laid out right-to-left: updated time, battery, Wi-Fi, indoor
     f = F("m", 17)
     sep = "   ·   "
     x = W - 14
@@ -814,7 +957,10 @@ def header(ctx: Ctx):
     if ctx.battery is not None:
         x -= tw(d, sep, f)
         text(d, (x, HEAD_H / 2), sep, f, fill=PAPER, anchor="lm")
-        pct = f"{ctx.battery}%" + ("  plug me in" if ctx.battery <= 20 else "")
+        if ctx.charging:
+            pct = f"{ctx.battery}%  {ctx.charging}"
+        else:
+            pct = f"{ctx.battery}%" + ("  plug me in" if ctx.battery <= 20 else "")
         x -= tw(d, pct, f)
         text(d, (x, HEAD_H / 2), pct, f, fill=PAPER, anchor="lm")
         # battery glyph: outline, nub, fill proportional to charge
@@ -825,6 +971,17 @@ def header(ctx: Ctx):
         d.rectangle((x + bw + 1, y0 + 4, x + bw + 3, y0 + bh - 4), fill=PAPER)
         fillw = max(1, round((bw - 6) * min(100, ctx.battery) / 100))
         d.rectangle((x + 3, y0 + 3, x + 3 + fillw, y0 + bh - 3), fill=PAPER)
+        if ctx.charging:
+            # a lightning bolt to the left of the battery
+            x -= 13
+            by = HEAD_H / 2
+            d.polygon([(x + 6, by - 9), (x + 1, by + 1), (x + 5, by + 1), (x + 3, by + 9),
+                       (x + 10, by - 2), (x + 6, by - 2), (x + 8, by - 9)], fill=PAPER)
+    if ctx.rssi is not None:
+        x -= tw(d, sep, f)
+        text(d, (x, HEAD_H / 2), sep, f, fill=PAPER, anchor="lm")
+        x -= 26
+        wifi_glyph(d, x, HEAD_H / 2 + 8, ctx.rssi)
     if ctx.indoor_f is not None:
         x -= tw(d, sep, f)
         text(d, (x, HEAD_H / 2), sep, f, fill=PAPER, anchor="lm")
@@ -1081,7 +1238,37 @@ def detail_sky(ctx, size):
     return c
 
 
-DETAILS = {"weather": detail_weather, "news": detail_news, "sports": detail_sports, "sky": detail_sky}
+def detail_calendar(ctx, size):
+    """Three columns: today, tomorrow, the day after."""
+    c, d = canvas(size)
+    w, h = size
+    now = ctx.now
+    cw = w / 3
+    day0 = _day_start(now)
+    ft, fl = F("cb", 18), F("m", 17)
+    for i in range(3):
+        a = _day_start(day0 + i * 86400 + 3600 * 3)
+        b = _day_start(a + 36 * 3600)
+        x = i * cw + 12
+        name = "Today" if i == 0 else time.strftime("%A", time.localtime(a))
+        text(d, (x, 10), name.upper(), F("cb", 19))
+        text(d, (x, 34), time.strftime("%B ", time.localtime(a)) + str(time.localtime(a).tm_mday), F("cm", 15))
+        y = 62
+        blocks = _busy_on(ctx, a, b)
+        if not blocks:
+            text(d, (x, y), "Nothing booked", F("sb", 17))
+        for j, blk in enumerate(blocks):
+            if y + 25 > h - 8:
+                text(d, (x, y), f"+{len(blocks) - j} more", F("cm", 15))
+                break
+            y += _busy_row(d, x, y, cw - 24, blk, now, ft, fl, a)
+        if i:
+            d.line((i * cw, 8, i * cw, h - 8), fill=INK, width=1)
+    return c
+
+
+DETAILS = {"weather": detail_weather, "news": detail_news, "sports": detail_sports, "calendar": detail_calendar,
+           "sky": detail_sky}
 
 
 def compose_page(ctx: Ctx, name: str) -> Image.Image:
@@ -1089,9 +1276,10 @@ def compose_page(ctx: Ctx, name: str) -> Image.Image:
     c.paste(header(ctx), (0, 0))
     # the strip becomes a page title bar with position dots
     s, d = canvas((W, STRIP_H))
-    titles = {"weather": "Weather", "news": "News & markets", "sports": "Scores & schedule", "sky": "Sky above"}
+    titles = {"weather": "Weather", "news": "News & markets", "sports": "Scores & schedule",
+              "calendar": "Calendar · busy times", "sky": "Sky above"}
     text(d, (14, STRIP_H / 2 - 1), titles.get(name, name).upper(), F("cb", 19), anchor="lm")
-    text(d, (W - 14, STRIP_H / 2 - 1), "middle: back  ·  right: next  ·  left: home", F("cm", 15), anchor="rm")
+    text(d, (W - 14, STRIP_H / 2 - 1), "left: next  ·  middle: back  ·  right: home", F("cm", 15), anchor="rm")
     d.line((0, STRIP_H - 1, W, STRIP_H - 1), fill=INK, width=2)
     c.paste(s, (0, HEAD_H))
     c.paste(DETAILS[name](ctx, BODY), (0, GRID_Y))

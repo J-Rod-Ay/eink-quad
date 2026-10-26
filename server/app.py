@@ -6,7 +6,14 @@ moves on, it gets a reel of changed rectangles and plays them as partial
 refreshes. Every layout decision, cadence and rotation lives here, and every
 knob is editable from the web dashboard (/?k=<admin token>).
 
-Run: python app.py   (env: see CONFIG below)
+Two listeners:
+  device  -- HTTPS on the LAN (QUAD_DEVICE_BIND:QUAD_DEVICE_PORT, default 0.0.0.0:8743) with
+             the certificate setup-mac.sh makes. Serves only /api/device/poll and /healthz,
+             and wants "Authorization: Bearer <QUAD_TOKEN>". No reverse proxy needed.
+  admin   -- plain HTTP on loopback (QUAD_BIND:QUAD_PORT, default 127.0.0.1:8740): the
+             settings dashboard. Reach it from another machine with an SSH tunnel.
+
+Run: python app.py   (settings come from quad.env next to this file; see setup-mac.sh)
 """
 from __future__ import annotations
 
@@ -24,6 +31,35 @@ import traceback
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import hmac  # noqa: E402
+import ssl  # noqa: E402
+
+
+def load_env_file(path):
+    """KEY=VALUE lines into os.environ (values already in the environment win).
+    Comments may follow a value after whitespace; quotes around a value are removed. This is
+    what lets quad.env work the same under a shell, launchd and anything else."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except FileNotFoundError:
+        return
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, val = line.split("=", 1)
+        key, val = key.strip(), val.strip()
+        if key.startswith("export "):
+            key = key[7:].strip()
+        if val[:1] in ("'", '"') and val.count(val[0]) >= 2:
+            val = val[1:val.index(val[0], 1)]
+        else:
+            val = re.split(r"\s+#", val, maxsplit=1)[0].strip()
+        os.environ.setdefault(key, val)
+
+
+load_env_file(os.environ.get("QUAD_ENV", os.path.join(os.path.dirname(os.path.abspath(__file__)), "quad.env")))
 os.environ.setdefault("TZ", "America/New_York")
 if hasattr(time, "tzset"):
     time.tzset()
@@ -40,8 +76,39 @@ from sky import Sky  # noqa: E402
 HERE = os.path.dirname(os.path.abspath(__file__))
 PORT = int(os.environ.get("QUAD_PORT", "8740"))
 BIND = os.environ.get("QUAD_BIND", "127.0.0.1")
-DEVICE_TOKEN = os.environ.get("QUAD_TOKEN", "dev")
-ADMIN_TOKEN = os.environ.get("QUAD_ADMIN", "admin")
+DEVICE_TOKEN = os.environ.get("QUAD_TOKEN", "")
+ADMIN_TOKEN = os.environ.get("QUAD_ADMIN", "")
+DEVICE_PORT = int(os.environ.get("QUAD_DEVICE_PORT", "8743"))
+DEVICE_BIND = os.environ.get("QUAD_DEVICE_BIND", "0.0.0.0")
+CERT_PATH = os.environ.get("QUAD_CERT", os.path.join(HERE, "tls", "quad.crt"))
+KEY_PATH = os.environ.get("QUAD_KEY", os.path.join(HERE, "tls", "quad.key"))
+
+
+CHARGE_STATES = {0: "not charging", 1: "pre-charging", 2: "charging", 3: "charged"}
+
+
+def charging_label(dv):
+    """What the header says next to the battery: "charging", "charged", "on USB" or nothing."""
+    if dv.get("usb"):
+        c = dv.get("charge") or ""
+        return "charging" if "charging" in c and c != "not charging" else "charged" if c == "charged" else "on USB"
+    if dv.get("usb") is None and dv.get("power") == "voltage guess" and dv.get("mode") == "live":
+        return "charging" if (dv.get("vbat") or 0) < 4.15 else "on USB"
+    return None
+
+
+def check_token(name, value):
+    """Refuse to start on a missing, placeholder or weak token rather than run unprotected."""
+    if not value:
+        sys.exit(f"{name} is not set. Run ./setup-mac.sh, or put {name}=... in quad.env.")
+    if value in ("dev", "admin", "change-me", "change-me-too") or len(value) < 24:
+        sys.exit(f"{name} is a placeholder or shorter than 24 characters. Run ./setup-mac.sh to make one.")
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", value):
+        sys.exit(f"{name} may only use letters, digits, '-' and '_' (it travels in an HTTP header).")
+
+
+def token_ok(given, expected):
+    return bool(given) and hmac.compare_digest(given.encode(), expected.encode())
 CONFIG_PATH = os.environ.get("QUAD_CONFIG", os.path.join(HERE, "config.json"))
 STATE_PATH = os.environ.get("QUAD_STATE", os.path.join(HERE, "state.json"))
 NOTES_DB = os.environ.get("QUAD_NOTES_DB", "")           # the note box's sqlite, optional
@@ -53,7 +120,8 @@ DEFAULTS = {
     "city": "Tampa",             # named in the Claude brief's prompt
     "lat": 27.9506, "lon": -82.4572,
     "units": "F",
-    "slots": ["weather", "news", "sports", "sky"],
+    "slots": ["weather", "news", "sports", "sky"],   # any four of R.PANELS
+    "calendar_titles": False,    # calendar corner: show event titles, if the feed has them (default: busy status only)
     "interval_min": 10,          # the main cadence: every panel refreshes on this beat
     "sky_min": 10,               # plane panel can run faster (partial refresh, no flash)
     "live_fast": True,           # while a team is playing, sports refreshes every live_min
@@ -186,7 +254,13 @@ def row_note(r):
 
 # ---------------------------------------------------------------- the board
 
-PAGES = ["quad", "weather", "news", "sports", "sky"]
+def active():
+    """The panels on the quad, in order. Only these are fetched, drawn and paged through."""
+    return [p for p in cfg.get("slots", []) if p in R.PANELS]
+
+
+def pages():
+    return ["quad"] + active()
 
 
 class Board:
@@ -216,12 +290,36 @@ class Board:
         self.snap = {}              # panel -> data
         self.device = {"last_seen": 0, "vbat": None, "t": None, "rh": None, "rssi": None, "version": 0,
                        "mode": "live", "boots": 0, "polls": 0}
+        # the last connection to the device port, whatever happened: shown on the dashboard
+        self.attempt = {"at": 0, "ip": None, "result": None}
         self.log = []               # recent events for the dashboard
         self.final = Image.new("1", (R.W, R.H), 1)
         self.final_gray = None      # grey rendering of final, when the last full refresh had one
         self.prev_version = self.version
         self.reel = b""
         self.render_ms = 0
+
+    def power_mode(self, vbat, usb):
+        """live (awake, long-polling) on USB power, sleep on battery.
+        Board v1.2 reports USB power from its charger chip; trust that. Older boards only send
+        the battery voltage: then it's USB if the voltage sits at full charge or has risen over
+        the last ~10 minutes (it only rises while charging)."""
+        now = time.time()
+        if usb is not None:
+            return ("live" if usb == "1" else "sleep"), "charger chip"
+        if vbat is None:
+            return "live", "unknown"
+        hist = self.vhist = [(t, v) for t, v in getattr(self, "vhist", []) if now - t < 1800] + [(now, vbat)]
+        old = [v for t, v in hist if now - t >= 480]
+        rising = bool(old) and vbat - old[-1] >= 0.03
+        return ("live" if vbat >= 4.15 or rising else "sleep"), "voltage guess"
+
+    def device_attempt(self, ip, result):
+        """Remember the last device-port connection, and log each change of outcome once."""
+        prev = self.attempt.get("result")
+        self.attempt = {"at": time.time(), "ip": ip, "result": result}
+        if result != prev:
+            self.note_event(f"device {ip}: {result}")
 
     def note_event(self, s):
         self.log.insert(0, (time.time(), s))
@@ -244,6 +342,8 @@ class Board:
                     urls += [g.opp_logo for g in (r.live, r.last, r.next) if g]
                 logos.prefetch(urls)
             self.snap["teams"], self.snap["live"] = teams, live
+        elif name == "calendar":
+            self.snap["busy"] = S.busy_times(cfg, force)
         elif name == "sky":
             featured, recent, _ = sky.snapshot()
             self.snap["featured"], self.snap["recent"] = featured, recent
@@ -270,11 +370,11 @@ class Board:
         if t_f is not None and cfg.get("units") != "C":
             t_f = t_f * 9 / 5 + 32
         return R.Ctx(now=now, cfg=cfg, weather=sn.get("weather"), heads=sn.get("heads") or [],
-                     quotes=sn.get("quotes") or [], teams=sn.get("teams") or [], featured=sn.get("featured"),
+                     quotes=sn.get("quotes") or [], teams=sn.get("teams") or [], busy=sn.get("busy") or [], calendar_set=bool(S.calendar_ics.urls_from_env()), featured=sn.get("featured"),
                      recent=sn.get("recent") or [], day_count=sn.get("day_count", 0), nearby=sn.get("nearby") or [],
                      event=sn.get("event"), upcoming=sn.get("upcoming") or [], brief=sn.get("brief", ""),
                      sticky=sticky, indoor_f=t_f, indoor_rh=dv.get("rh"), battery=batt,
-                     on_usb=dv.get("mode") == "live", cycle=self.cycle, updated=self.updated or now,
+                     on_usb=dv.get("mode") == "live", rssi=dv.get("rssi"), charging=charging_label(dv), cycle=self.cycle, updated=self.updated or now,
                      page=page or self.page)
 
     # -- commit (call with cond held)
@@ -353,7 +453,7 @@ class Board:
         beat = int(now // iv)
         due = []
         if self.beats.get("main") != beat:
-            due = ["weather", "news", "sports", "sky", "brief"]
+            due = active() + ["brief"]
             self.beats["main"] = beat
             with self.cond:
                 self.cycle += 1
@@ -362,16 +462,21 @@ class Board:
             ev = events.next_event() if events else None
             if ev is not None:   # event countdown ticks every minute
                 sb = int(now // 60)
-            if self.beats.get("sky") != sb:
+            if self.beats.get("sky") != sb and "sky" in active():
                 due.append("sky")
             live = self.snap.get("live")
-            if live and cfg.get("live_fast"):
+            if live and cfg.get("live_fast") and "sports" in active():
                 lb = int(now // (max(1, cfg["live_min"]) * 60))
                 if self.beats.get("live") != lb:
                     due.append("sports")
                     self.beats["live"] = lb
         if "sky" in due:
             self.beats["sky"] = int(now // (max(1, cfg["sky_min"]) * 60))
+        if "calendar" in active() and "calendar" not in due:
+            cb = int(now // 300)   # "next busy in 25 min" stays within 5 minutes of true
+            if self.beats.get("calendar") != cb:
+                due.append("calendar")
+                self.beats["calendar"] = cb
         if not due:
             return
         for name in due:
@@ -444,7 +549,7 @@ class Board:
                     return self.redraw("home", major=True)
                 self.note_event("manual refresh")
         if b == 0:
-            for name in ("weather", "news", "sports", "sky"):
+            for name in active():
                 try:
                     self.take(name, force=True)
                 except Exception:
@@ -454,14 +559,15 @@ class Board:
                 self.redraw("refresh button", major=True)
             return
         with self.cond:
-            i = PAGES.index(self.page)
-            self.page = PAGES[(i + (1 if b == 2 else -1)) % len(PAGES)]
+            pg = pages()
+            i = pg.index(self.page) if self.page in pg else 0
+            self.page = pg[(i + (1 if b == 2 else -1)) % len(pg)]
             self.page_since = time.time()
             self.redraw(f"page {self.page}", major=True)
 
     def goto(self, page):
         with self.cond:
-            self.page = page if page in PAGES else "quad"
+            self.page = page if page in pages() else "quad"
             self.page_since = time.time()
             self.redraw(f"page {self.page} (dashboard)", major=True)
 
@@ -513,8 +619,8 @@ class H(BaseHTTPRequestHandler):
         return p
 
     def admin(self):
-        tok = self.q().get("k") or (self.headers.get("Authorization") or "").replace("Bearer ", "")
-        return tok == ADMIN_TOKEN
+        tok = self.q().get("k") or bearer(self.headers)
+        return token_ok(tok, ADMIN_TOKEN)
 
     def do_HEAD(self):
         self.do_GET()
@@ -522,8 +628,6 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         p = self.route()
         try:
-            if p == "/api/device/poll":
-                return self.device_poll()
             if p == "/healthz":
                 return self.send(200, "ok", "text/plain")
             if not self.admin():
@@ -587,10 +691,13 @@ class H(BaseHTTPRequestHandler):
                            "battery": lipo_percent(dv["vbat"]) if dv.get("vbat") else None,
                            "in_sync": dv.get("version") == board.version},
                 "quiet_now": quiet_now(),
+                "attempt": {**board.attempt,
+                            "age_s": round(now - board.attempt["at"]) if board.attempt["at"] else None},
             }
         st["sources"] = {
             "weather": S._weather.status(), "alerts": S._alerts.status(), "news": S.news_status(),
             "quotes": S.quotes_status(), "sports": S.sports_status(), "brief": S.brief_status(),
+            "calendar": S.calendar_status(),
             "sky": {"age_s": round(now - sky.updated_at) if sky and sky.updated_at else None,
                     "error": sky.last_error if sky else None},
             "events": events.status if events else None,
@@ -622,8 +729,8 @@ class H(BaseHTTPRequestHandler):
             else:
                 v = str(v)
             new[k] = v
-        if sorted(new["slots"]) != sorted(R.PANELS):
-            raise ValueError("slots must use each panel exactly once")
+        if len(new["slots"]) != 4 or len(set(new["slots"])) != 4 or not set(new["slots"]) <= set(R.PANELS):
+            raise ValueError(f"slots must be four different panels from: {', '.join(R.PANELS)}")
         moved = (new["lat"], new["lon"], new["radar_nm"], new["iss"], new["launch"]) != \
                 (cfg["lat"], cfg["lon"], cfg["radar_nm"], cfg["iss"], cfg["launch"])
         cfg.clear()
@@ -633,7 +740,7 @@ class H(BaseHTTPRequestHandler):
         if moved:
             start_sky()
         # data-shaping changes need a refetch; purely visual ones just a redraw
-        for name in ("weather", "news", "sports", "sky"):
+        for name in active():
             try:
                 board.take(name, force=name in ("weather",) and moved)
             except Exception:
@@ -675,16 +782,30 @@ class H(BaseHTTPRequestHandler):
     # -- device
     def device_poll(self):
         q = self.q()
-        if q.get("k") != DEVICE_TOKEN:
-            return self.send(404, {"error": "not found"})
+        ip = self.client_address[0]
+        tok = bearer(self.headers)
+        if not token_ok(tok, DEVICE_TOKEN):
+            why = "no token" if not tok else "wrong token"
+            board.device_attempt(ip, f"rejected: {why}")
+            return self.send(401, {"error": f"unauthorized ({why})"}, headers={"WWW-Authenticate": "Bearer"})
+        board.device_attempt(ip, "ok")
         v = int(q.get("v", "0") or 0)
         wait = min(int(q.get("wait", "0") or 0), 30)
         vbat = float(q["vbat"]) if q.get("vbat") else None
         btn = q.get("btn")
-        mode = "live" if (vbat is None or vbat >= 3.80) else "sleep"
+        usb = q.get("usb") if q.get("usb") in ("0", "1") else None
+        chg = int(q["chg"]) if q.get("chg", "").isdigit() else None
+        mode, power = board.power_mode(vbat, usb)
         dv = board.device
-        dv.update(last_seen=time.time(), vbat=vbat, mode=mode, version=v,
+        was = charging_label(dv)
+        dv.update(last_seen=time.time(), vbat=vbat, mode=mode, version=v, usb=usb == "1" if usb else None,
+                  charge=CHARGE_STATES.get(chg) if chg is not None else None, power=power,
                   rssi=int(q["rssi"]) if q.get("rssi") else dv.get("rssi"), polls=dv["polls"] + 1)
+        now_label = charging_label(dv)
+        if now_label != was:
+            # plugged in or unplugged: redraw so the header shows it now, not at the next beat
+            with board.cond:
+                board.redraw(f"power: {now_label or 'battery'}")
         if q.get("t"):
             dv["t"] = float(q["t"])
             dv["rh"] = float(q["rh"]) if q.get("rh") else None
@@ -727,13 +848,76 @@ class H(BaseHTTPRequestHandler):
         return self.send(200, body, "application/octet-stream", headers)
 
 
+class DeviceH(H):
+    """The LAN-facing listener: the board's poll and a health check, nothing else."""
+
+    # Idle keep-alive connections close after this. The board sleeps without closing its
+    # connection, so without a timeout each wake left one open until the server ran out of files.
+    # Longer than the 30 s long-poll.
+    timeout = 90
+
+    def do_GET(self):
+        p = self.route()
+        try:
+            if p == "/api/device/poll":
+                return self.device_poll()
+            if p == "/healthz":
+                return self.send(200, "ok", "text/plain")
+            board.device_attempt(self.client_address[0], f"unknown path {p[:60]}")
+            return self.send(404, {"error": "not found", "path": p})
+        except (BrokenPipeError, ConnectionResetError, ssl.SSLError):
+            pass
+        except Exception as e:
+            traceback.print_exc()
+            return self.send(500, {"error": str(e)})
+
+    def do_POST(self):
+        return self.send(405, {"error": "method not allowed"})
+
+
+def bearer(headers):
+    v = headers.get("Authorization") or ""
+    return v[7:].strip() if v[:7].lower() == "bearer " else ""
+
+
 class Server(ThreadingHTTPServer):
     daemon_threads = True
     request_queue_size = 64
 
 
+class TLSServer(Server):
+    """HTTPS without a reverse proxy. The handshake runs in the request thread, so a slow or
+    broken client can't stall the listener."""
+
+    def __init__(self, addr, handler, ctx):
+        self.ctx = ctx
+        super().__init__(addr, handler)
+
+    def get_request(self):
+        sock, addr = self.socket.accept()
+        return self.ctx.wrap_socket(sock, server_side=True, do_handshake_on_connect=False), addr
+
+    def finish_request(self, request, client_address):
+        try:
+            request.settimeout(20)
+            request.do_handshake()
+        except (ssl.SSLError, OSError) as e:
+            board.device_attempt(client_address[0], f"TLS handshake failed: {type(e).__name__}")
+            return
+        super().finish_request(request, client_address)
+
+
+def tls_context():
+    if not (os.path.exists(CERT_PATH) and os.path.exists(KEY_PATH)):
+        sys.exit(f"No certificate at {CERT_PATH}. Run ./setup-mac.sh to make one.")
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    ctx.load_cert_chain(CERT_PATH, KEY_PATH)
+    return ctx
+
+
 def warm():
-    for name in ("weather", "news", "sports", "sky"):
+    for name in active():
         try:
             board.take(name)
         except Exception:
@@ -748,7 +932,15 @@ def warm():
 
 
 if __name__ == "__main__":
+    check_token("QUAD_TOKEN", DEVICE_TOKEN)
+    check_token("QUAD_ADMIN", ADMIN_TOKEN)
+    if hmac.compare_digest(DEVICE_TOKEN, ADMIN_TOKEN):
+        sys.exit("QUAD_TOKEN and QUAD_ADMIN must differ: the board's key must not open the settings.")
+    device = TLSServer((DEVICE_BIND, DEVICE_PORT), DeviceH, tls_context())
+    admin = Server((BIND, PORT), H)
     start_sky()
-    print(f"quad board on {BIND}:{PORT} tz={os.environ['TZ']} notes={'on' if nb else 'off'}", flush=True)
+    print(f"quad board: device https://{DEVICE_BIND}:{DEVICE_PORT}  settings http://{BIND}:{PORT}  "
+          f"tz={os.environ['TZ']} notes={'on' if nb else 'off'}", flush=True)
     threading.Thread(target=warm, daemon=True).start()
-    Server((BIND, PORT), H).serve_forever()
+    threading.Thread(target=device.serve_forever, daemon=True).start()
+    admin.serve_forever()

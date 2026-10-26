@@ -259,20 +259,28 @@ document.getElementById('form').addEventListener('input', () => { dirty = true; 
 
 function loadThumbs() {
   const t = document.getElementById('thumbs'); t.innerHTML = '';
-  for (const p of ['weather','news','sports','sky']) {
+  for (const p of (S.cfg.slots || ['weather','news','sports','sky'])) {
     const img = new Image(); img.src = api(`/api/preview.png?page=${p}&t=${Date.now()}`); img.alt = p; img.title = 'Show ' + p + ' on the board';
     img.onclick = () => act({action:'page', page:p}); t.appendChild(img);
   }
 }
+
+// Text that came in from the network (paths, addresses) must not be read as HTML.
+const esc = (x) => String(x ?? '').replace(/[&<>"']/g, (c) => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
 
 function render() {
   const d = S.device;
   const chips = [];
   const age = d.age_s;
   chips.push(age != null && age < 90 ? ['ok', 'Device online'] : ['bad', 'Device offline · last ' + ago(age)]);
+  const at = S.attempt || {};
+  if (at.result && at.result !== 'ok' && at.age_s != null && at.age_s < 900)
+    chips.push(['bad', 'Board connection ' + esc(at.result)]);
   if (d.in_sync === false && age != null && age < 90) chips.push(['warn', 'Updating…']);
   if (d.t != null) chips.push(['', `Inside ${(d.t*9/5+32).toFixed(0)}°F ${d.rh != null ? d.rh.toFixed(0)+'%' : ''}`]);
   if (d.battery != null) chips.push([d.battery < 20 ? 'bad' : '', `Battery ${d.battery}% (${d.vbat?.toFixed(2)}V)`]);
+  if (d.usb != null) chips.push(['', d.usb ? `On USB · ${esc(d.charge || 'power')}` : 'On battery']);
+  else if (d.power) chips.push(['', `${d.mode === 'live' ? 'Probably on USB' : 'Probably on battery'} (${esc(d.power)})`]);
   if (d.rssi != null) chips.push(['', `Wi-Fi ${d.rssi} dBm`]);
   chips.push(['', `Page: ${PAGE_NAMES[S.page] || S.page}`]);
   if (S.note) chips.push(['warn', `Showing a note from ${S.note}`]);
@@ -284,7 +292,7 @@ function render() {
   document.getElementById('hdr').textContent = `v${S.version} · ${S.cfg.label}`;
   document.getElementById('briefText').textContent = S.sources.brief.text || (S.cfg.llm_brief ? 'No brief yet' : 'Brief is off');
   if (!document.activeElement || document.activeElement.id !== 'stickyText') document.getElementById('stickyText').value = S.sticky || '';
-  document.getElementById('notesNote').textContent = S.notes_available ? 'Connected to the note box inbox. Left button hearts a note, any other button dismisses it.' : 'Note box inbox not found on this server.';
+  document.getElementById('notesNote').textContent = S.notes_available ? 'Connected to the note box inbox. The right button hearts a note, any other button dismisses it.' : 'Note box inbox not found on this server.';
   const rows = [];
   const src = S.sources;
   const st = (o) => o ? (o.error ? `<span style="color:var(--bad)">${o.error}</span> (last ok ${ago(o.age_s)})` : `ok · ${ago(o.age_s)}`) : '—';
@@ -292,11 +300,13 @@ function render() {
   for (const [k, v] of Object.entries(src.news)) rows.push(['WSJ ' + (S.feeds[k] || k), st(v)]);
   for (const [k, v] of Object.entries(src.sports)) rows.push([S.teams[k] || k, st(v)]);
   rows.push(['Plane feed', st(src.sky)], ['Claude brief', st(src.brief)]);
+  if (src.calendar) rows.push(['Calendar', src.calendar.configured ? st(src.calendar) : 'not set up (QUAD_CALENDAR_ICS in quad.env)']);
   if (src.events && src.events.upcoming && src.events.upcoming.length)
     rows.push(['Next sky event', src.events.upcoming.map(e => `${e.title} in ${Math.round(e.in_s/3600)}h (${e.confidence})`).join('<br>')]);
+  rows.push(['Last board connection', at.result ? `${esc(at.result)} · from ${esc(at.ip)} · ${ago(at.age_s)}` : 'none yet']);
   rows.push(['Render', `${S.render_ms} ms · cycle ${S.cycle}`], ['Device', `${d.polls} polls · ${d.boots} boots · on v${d.version}`]);
   document.getElementById('health').innerHTML = rows.map(([a, b]) => `<tr><td>${a}</td><td>${b}</td></tr>`).join('');
-  document.getElementById('log').innerHTML = S.log.map(([t, s]) => `${hm(t)}  ${s}`).join('<br>');
+  document.getElementById('log').innerHTML = S.log.map(([t, s]) => `${hm(t)}  ${esc(s)}`).join('<br>');
 }
 
 async function poll() {

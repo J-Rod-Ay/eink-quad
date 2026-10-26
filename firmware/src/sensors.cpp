@@ -52,6 +52,40 @@ float readVBat() {
   return (sum / 8.0f) / 1000.0f * 2.0f;   // 2:1 divider
 }
 
+// SY6974B, read-only. Only REG0B (part id) and REG08 (status) are read, one
+// byte at a time: REG09 clears its fault bits when read, and a write to REG0B
+// bit 7 would reset the charger's settings, so neither is ever touched.
+static bool chargerReg(uint8_t reg, uint8_t *v) {
+  Wire1.beginTransmission(CHARGER_ADDR);
+  Wire1.write(reg);
+  if (Wire1.endTransmission(false) != 0) return false;
+  if (Wire1.requestFrom((uint8_t)CHARGER_ADDR, (uint8_t)1) != 1) return false;
+  *v = Wire1.read();
+  return true;
+}
+
+bool readCharger(bool *usb, uint8_t *chg) {
+  static int8_t present = -1;   // unknown until the first try after each wake
+  static bool begun = false;
+  if (present == 0) return false;
+  if (!begun) {
+    Wire1.begin(CHG_SDA_PIN, CHG_SCL_PIN, 100000);
+    begun = true;
+  }
+  if (present < 0) {
+    uint8_t id;
+    present = (chargerReg(0x0B, &id) && (id & 0x78) == 0x40) ? 1 : 0;   // PN = 1000
+    if (!present) return false;
+  }
+  uint8_t st;
+  if (!chargerReg(0x08, &st)) return false;
+  uint8_t bus = st >> 5;        // 000 no input, 111 OTG, anything else = a USB source
+  bool powerGood = st & 0x04;
+  *usb = powerGood || (bus != 0 && bus != 7);
+  *chg = (st >> 3) & 0x03;
+  return true;
+}
+
 int batteryPercent(float v) {
   if (v >= 4.15f) return 100;
   if (v <= 3.30f) return 0;

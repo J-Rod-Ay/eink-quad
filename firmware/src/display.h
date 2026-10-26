@@ -45,4 +45,9 @@ struct MsgLine {
 };
 void drawMessage(const char *title, const MsgLine *lines, int n,
                  const char *footer = nullptr);
+
+// A small black label in the bottom-right corner, drawn over whatever the
+// server last sent, with a partial refresh. For "No Wi-Fi", "Server down"...
+// The server repaints the corner on the next full frame.
+void badge(const char *text);
 }  // namespace display

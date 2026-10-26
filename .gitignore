@@ -11,3 +11,6 @@ server/state.json
 server/cache/
 server/*.png
 OPS.local.md
+server/tls/
+server/.venv/
+server/logs/
