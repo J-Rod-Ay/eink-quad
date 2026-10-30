@@ -37,6 +37,7 @@ import skyevents  # noqa: E402
 import sources as S  # noqa: E402
 from sky import Sky  # noqa: E402
 import ical  # noqa: E402
+import shul as SHUL  # noqa: E402
 
 # ---------------------------------------------------------------- CONFIG
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -57,6 +58,7 @@ DEFAULTS = {
     "units": "F",
     "slots": ["weather", "news", "sports", "sky"],
     "jcal_show": ["hebdate", "shabbat", "parsha", "yomtov", "holiday", "roshchodesh", "fasts"],
+    "weekly_jewish": True,       # YIOT newsletter (+ jcal) refetched Thursdays 8 PM ET (Fri 8 AM retry on failure)
     "pinned": "",                # optional one-line message on the home screen strip
     "interval_min": 10,          # the main cadence: every panel refreshes on this beat
     "sky_min": 10,               # plane panel can run faster (partial refresh, no flash)
@@ -353,6 +355,15 @@ class Board:
             self.snap["upcoming"] = events.upcoming()
         elif name == "shabbat":
             self.snap["shabbat"] = S.shabbat(cfg, force)
+        elif name in ("shul", "newsletter"):
+            if force:
+                data, st = SHUL.refresh(force=False)
+                print(f"[shul] refresh: {st} {(data or {}).get('issue_date')}", flush=True)
+                if st == "none":
+                    raise RuntimeError("no newsletter found")
+            else:
+                data = SHUL.load()
+            self.snap["shul"] = data
         elif name == "calendar":
             self.snap["calendar"] = ical.calendar(cfg, force=force)
         elif name == "trips":
@@ -458,6 +469,7 @@ class Board:
                 self.page = "quad"
                 self.redraw("page timeout", major=True)
         self.check_notes()
+        self.weekly(now)
         if quiet_now():
             return
         iv = max(1, cfg["interval_min"]) * 60
@@ -502,6 +514,42 @@ class Board:
                 self.rot_step = int(now // (max(rm, cfg["interval_min"]) * 60)) if rm else self.cycle
             self.auto_scoreboard()
             self.redraw("scheduled " + ",".join(due), major="weather" in due)
+
+    def weekly(self, now):
+        """Thursday 8 PM ET: refetch the Jewish calendar and the YIOT newsletter (shul.json).
+        Friday 8 AM ET retries only if the Thursday fetch failed."""
+        if not cfg.get("weekly_jewish", True):
+            return
+        from datetime import datetime, timedelta
+        dt = datetime.fromtimestamp(now)
+        thu = (dt - timedelta(days=(dt.weekday() - 3) % 7)).replace(hour=20, minute=0, second=0, microsecond=0)
+        if thu > dt:
+            thu -= timedelta(days=7)
+        slot = thu.strftime("%Y-%m-%d")
+        st = self.beats.setdefault("weekly", {})
+        if st.get("slot") != slot:
+            # first boot with a newsletter already on disk: wait for the next Thursday
+            if st.get("slot") is None and self.snap.get("shul") is not None and not st.get("booted"):
+                st.update(slot=slot, ok=True, booted=True)
+                return
+            st.update(slot=slot, ok=None, retried=False, booted=True)
+        elif st.get("ok") is not False or st.get("retried"):
+            return
+        else:
+            if dt < (thu + timedelta(days=1)).replace(hour=8):
+                return
+            st["retried"] = True
+        ok = True
+        for name in ("shabbat", "shul"):
+            try:
+                self.take(name, force=True)
+            except Exception:
+                ok = False
+                traceback.print_exc()
+        st["ok"] = ok
+        print(f"[weekly] jewish data {'ok' if ok else 'FAILED (retry Fri 8 AM)'}", flush=True)
+        with self.cond:
+            self.redraw("weekly jewish data")
 
     def auto_scoreboard(self):
         """scoreboard_auto: jump to the scoreboard when a team goes live, home when it's over."""
@@ -1069,6 +1117,11 @@ class H(BaseHTTPRequestHandler):
                 board.sticky_until = time.time() + hours * 3600 if hours else 0
                 board.unread = bool(board.sticky) and bool(body.get("blink", True))
                 board.redraw("sticky set" if board.sticky else "sticky cleared")
+        elif a == "shul_refresh":            # manual: fetch the newest YIOT newsletter now
+            board.take("shul", force=True)
+            with board.cond:
+                board.redraw("shul refreshed")
+            return {"ok": True, "version": board.version, "issue": (board.snap.get("shul") or {}).get("issue_date")}
         elif a == "brief":
             board.take("brief", force=True)
             with board.cond:
@@ -1141,6 +1194,12 @@ class Server(ThreadingHTTPServer):
 
 def warm():
     board.snap["shopping"] = list_load()
+    board.snap["shul"] = SHUL.load()
+    if board.snap["shul"] is None:          # nothing on disk yet: one fetch now, then weekly
+        try:
+            board.take("shul", force=True)
+        except Exception:
+            traceback.print_exc()
     for name in ("weather", "news", "sports", "sky", "shabbat", "calendar", "trips"):
         try:
             board.take(name)

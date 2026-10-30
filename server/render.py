@@ -1459,54 +1459,108 @@ def panel_shopping(ctx: Ctx, size):
     return c
 
 
-def _nl_items(ctx):
-    shul = getattr(ctx, "shul", None) or {}
-    items = shul.get("highlights") or shul.get("items") or []
+# ================================================================== Young Israel of Teaneck newsletter
+# ctx.shul is shul.json from shul.py: {"issue_date", "issue_range", "personal": {kind: [items]},
+#                                      "sections": [{"title", "kind", "items"}]}
+# (legacy {"highlights": [(title, body), ...]} fixtures are still accepted)
+
+SHUL_ORDER = [("mazal_tov", "MAZAL TOV"), ("birthdays", "BIRTHDAYS"), ("anniversaries", "ANNIVERSARIES"),
+              ("welcome", "WELCOME"), ("refuah", "REFUAH SHLEIMAH"), ("condolences", "CONDOLENCES"),
+              ("kiddush", "KIDDUSH SPONSORS")]
+
+
+def _issue_label(data):
+    ds = (data or {}).get("issue_date") or ""
+    try:
+        t = time.strptime(ds, "%Y-%m-%d")
+        return f"Week of {time.strftime('%b', t)} {t.tm_mday}"
+    except ValueError:
+        return ""
+
+
+def _shul_blocks(data, personal=True, events=True):
+    """[(TITLE, [item, ...])]: personal/community news first, then what's coming up."""
+    import re
+    data = data or {}
     out = []
-    for it in items:
-        if isinstance(it, dict):
-            out.append((str(it.get("title", "")), str(it.get("body") or it.get("text") or "")))
-        else:
-            t, b = (list(it) + ["", ""])[:2]
-            out.append((str(t), str(b)))
+    if data.get("highlights") or data.get("items"):          # legacy simple shape
+        for it in data.get("highlights") or data.get("items"):
+            if isinstance(it, dict):
+                t, b = str(it.get("title", "")), str(it.get("body") or it.get("text") or "")
+            else:
+                t, b = (list(it) + ["", ""])[:2]
+            out.append((str(t).upper(), [str(b)] if b else []))
+        return out
+    p = data.get("personal") or {}
+    if personal:
+        for k, title in SHUL_ORDER:
+            if p.get(k):
+                items = p[k]
+                if k == "kiddush":     # keep the 'in honor / in memory' lines, they're the community news
+                    items = [i for i in items if re.search(r"honou?r|memory|yahrzeit|l'iluy|celebrat", i, re.I)] or items
+                if k == "mazal_tov":
+                    items = [re.sub(r"^Ma[zt]+[ae]l Tov to ", "", i) for i in items]
+                out.append((title, items))
+    if events:
+        secs = data.get("sections") or []
+        evs = [s for s in secs if s.get("kind") == "event"]
+        if evs:
+            out.append(("COMING UP", [s["title"] for s in evs]))
+        for s in secs:
+            if s.get("kind") in ("learning", "youth", "community") and s.get("items"):
+                out.append((s["title"].upper(), s["items"]))
     return out
 
 
-def _nl_list(d, items, x, y, w, bottom, ft, fb, tlh, blh, gap):
-    """Wrapped title + body blocks until `bottom`; returns how many were drawn."""
-    n = 0
-    for title, body in items:
-        tl = wrap(d, title, ft, w, 2) if title else []
-        bl = wrap(d, body, fb, w, 6) if body else []
-        need = len(tl) * tlh + blh + 4
-        if y + need > bottom:
+def _shul_flow(d, blocks, x, y, right, bottom, f=None, lines_per=3, tf=None):
+    """Flow pill-headed blocks of bulleted items between x..right until bottom.
+    Returns (y, blocks_started, items_drawn_in_last_block) so callers can continue in another column."""
+    f = f or F("cm", 16)
+    tf = tf or F("cb", 14)
+    lh = f.size + 2
+    nb, last = 0, 0
+    for title, items in blocks:
+        if y + 21 + lh > bottom:
             break
-        avail = (bottom - y - len(tl) * tlh) // blh
-        if len(bl) > avail:
-            bl = bl[:max(avail, 1)]
-            bl[-1] = ellipsize(d, bl[-1] + " …", fb, w)
-        for ln in tl:
-            text(d, (x, y), ln, ft); y += tlh
-        for ln in bl:
-            text(d, (x, y), ln, fb); y += blh
-        y += gap
-        n += 1
-    return n, y
+        pill(d, x, y, ellipsize(d, title, tf, right - x - 12), tf, pad=4)
+        y += tf.size + 7
+        nb, last = nb + 1, 0
+        for it in items:
+            if y + lh > bottom:
+                break
+            ls = wrap(d, it, f, right - x - 12, lines_per)
+            ls = ls[: max(1, (bottom - y) // lh)]
+            d.rectangle((x + 1, y + lh // 2 - 2, x + 4, y + lh // 2 + 1), fill=INK)
+            for ln in ls:
+                text(d, (x + 10, y), ln, f)
+                y += lh
+            y += 2
+            last += 1
+        y += 5
+    return y, nb, last
+
+
+def _nl_header(d, w, data, title, f):
+    text(d, (12, 8), title, f)
+    lab = (data or {}).get("issue_range") or _issue_label(data)
+    if lab:
+        text(d, (w - 12, 11), ellipsize(d, lab, F("cm", 14), w // 2), F("cm", 14), anchor="ra")
 
 
 def panel_newsletter(ctx: Ctx, size):
-    """Young Israel of Teaneck weekly newsletter highlights (corner).
-    Wraps titles/bodies and fills whatever height the slot gives (tall in thirds)."""
+    """Young Israel of Teaneck weekly newsletter (corner; tall in thirds): personal/community news, then coming up."""
     w, h = size
     c, d = canvas(size)
-    text(d, (12, 8), "NEWSLETTER", F("cb", 18))
-    items = _nl_items(ctx) or [
-        ("This week", "YIOT newsletter loads Thursday evenings"),
-        ("Community", "Highlights from Young Israel of Teaneck"),
-    ]
-    n, _ = _nl_list(d, items, 12, 36, w - 24, h - 26, F("sb", 16), F("m", 15), 19, 18, 8)
-    if n < len(items):
-        text(d, (w - 12, h - 8), f"+{len(items) - n} more  ·  newsletter page", F("cm", 13), anchor="rd")
+    data = getattr(ctx, "shul", None)
+    _nl_header(d, w, data, "NEWSLETTER", F("cb", 18))
+    blocks = _shul_blocks(data)
+    if not blocks:
+        _calm(d, w, 50, "Newsletter loads Thursday", "Fetched Thursdays 8 PM ET")
+        return c
+    y, nb, last = _shul_flow(d, blocks, 12, 36, w - 4, h - 22, F("cm", 15), lines_per=2)
+    left = sum(len(i) for _, i in blocks[nb:]) + (len(blocks[nb - 1][1]) - last if nb else 0)
+    if left > 0:
+        text(d, (w - 12, h - 6), f"+{left} more  ·  newsletter page", F("cm", 13), anchor="rd")
     return c
 
 
@@ -1952,24 +2006,29 @@ def detail_shabbat(ctx, size):
 
 
 def detail_newsletter(ctx, size):
-    """Full-page YIOT newsletter: two columns of wrapped highlights, as many as fit."""
+    """Full-page YIOT newsletter: personal news then coming-up, flowing through two reading columns."""
     c, d = canvas(size)
     w, h = size
-    items = _nl_items(ctx)
-    if not items:
-        text(d, (16, 16), "No newsletter yet: YIOT highlights load Thursday evenings.", F("m", 18))
+    data = getattr(ctx, "shul", None)
+    blocks = _shul_blocks(data)
+    if not blocks:
+        _calm(d, w, 40, "Newsletter loads Thursday", "Fetched Thursdays 8 PM ET (admin action: shul_refresh)")
         return c
     colw = (w - 48) // 2
-    rest, y0 = items, 10
+    rest, y0, f = list(blocks), 10, F("cm", 17)
     for ci in range(2):
         x = 16 + ci * (colw + 16)
         if ci:
             d.line((x - 8, 8, x - 8, h - 8), fill=INK, width=1)
-        n, _ = _nl_list(d, rest, x, y0, colw, h - 28, F("sb", 19), F("m", 17), 23, 21, 12)
-        rest = rest[n:]
-    if rest:
-        text(d, (w - 14, h - 8), f"+{len(rest)} more in the newsletter", F("cm", 14), anchor="rd")
-    text(d, (16, h - 8), "Young Israel of Teaneck", F("cm", 14), anchor="ld")
+        _, nb, last = _shul_flow(d, rest, x, y0, x + colw, h - 26, f, lines_per=4, tf=F("cb", 15))
+        if nb:   # carry the unfinished block into the next column (title repeated)
+            t, items = rest[nb - 1]
+            rest = ([(t + " (cont.)", items[last:])] if last < len(items) else []) + rest[nb:]
+    left = sum(len(i) for _, i in rest)
+    if left:
+        text(d, (w - 14, h - 8), f"+{left} more in the newsletter", F("cm", 14), anchor="rd")
+    lab = (data or {}).get("issue_range") or _issue_label(data)
+    text(d, (16, h - 8), "Young Israel of Teaneck" + (f"  ·  {lab}" if lab else ""), F("cm", 14), anchor="ld")
     return c
 
 
