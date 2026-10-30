@@ -1459,29 +1459,55 @@ def panel_shopping(ctx: Ctx, size):
     return c
 
 
+def _nl_items(ctx):
+    shul = getattr(ctx, "shul", None) or {}
+    items = shul.get("highlights") or shul.get("items") or []
+    out = []
+    for it in items:
+        if isinstance(it, dict):
+            out.append((str(it.get("title", "")), str(it.get("body") or it.get("text") or "")))
+        else:
+            t, b = (list(it) + ["", ""])[:2]
+            out.append((str(t), str(b)))
+    return out
+
+
+def _nl_list(d, items, x, y, w, bottom, ft, fb, tlh, blh, gap):
+    """Wrapped title + body blocks until `bottom`; returns how many were drawn."""
+    n = 0
+    for title, body in items:
+        tl = wrap(d, title, ft, w, 2) if title else []
+        bl = wrap(d, body, fb, w, 6) if body else []
+        need = len(tl) * tlh + blh + 4
+        if y + need > bottom:
+            break
+        avail = (bottom - y - len(tl) * tlh) // blh
+        if len(bl) > avail:
+            bl = bl[:max(avail, 1)]
+            bl[-1] = ellipsize(d, bl[-1] + " …", fb, w)
+        for ln in tl:
+            text(d, (x, y), ln, ft); y += tlh
+        for ln in bl:
+            text(d, (x, y), ln, fb); y += blh
+        y += gap
+        n += 1
+    return n, y
+
+
 def panel_newsletter(ctx: Ctx, size):
-    """Young Israel of Teaneck weekly newsletter highlights (corner)."""
+    """Young Israel of Teaneck weekly newsletter highlights (corner).
+    Wraps titles/bodies and fills whatever height the slot gives (tall in thirds)."""
     w, h = size
     c, d = canvas(size)
     text(d, (12, 8), "NEWSLETTER", F("cb", 18))
-    shul = getattr(ctx, "shul", None) or {}
-    items = shul.get("highlights") or shul.get("items") or []
-    if not items:
-        items = [
-            ("This week", "YIOT newsletter loads Thursday evenings"),
-            ("Shabbat", "See the Shabbat column for candle lighting"),
-            ("Community", "Highlights from Young Israel of Teaneck"),
-        ]
-    y = 36
-    for title, body in items[:6]:
-        if y + 36 > h - 8:
-            break
-        text(d, (12, y), ellipsize(d, str(title), F("sb", 16), w - 24), F("sb", 16))
-        y += 20
-        text(d, (12, y), ellipsize(d, str(body), F("m", 15), w - 24), F("m", 15))
-        y += 22
+    items = _nl_items(ctx) or [
+        ("This week", "YIOT newsletter loads Thursday evenings"),
+        ("Community", "Highlights from Young Israel of Teaneck"),
+    ]
+    n, _ = _nl_list(d, items, 12, 36, w - 24, h - 26, F("sb", 16), F("m", 15), 19, 18, 8)
+    if n < len(items):
+        text(d, (w - 12, h - 8), f"+{len(items) - n} more  ·  newsletter page", F("cm", 13), anchor="rd")
     return c
-
 
 
 PANELS = {"weather": panel_weather, "news": panel_news, "sports": panel_sports, "sky": panel_sky,
@@ -1590,14 +1616,16 @@ def layout_of(cfg) -> str:
 def slot_boxes(layout="quad"):
     """Slot rectangles in layout units."""
     if layout == "thirds":
-        # Left 1/3: Shabbat (tall) + newsletter. Middle: weather / trips / calendar.
+        # Left column: Shabbat SHORT on top (rows 0-1 = 1/3 body height; times are compact)
+        # + newsletter TALL below (rows 1-3 = 2/3 body height, reading room).
+        # Middle: weather / trips / calendar (1/3 each).
         # Right: sports (tall) + scoreboard — two panels; room for a third later.
         xs = [0, W // 3, 2 * W // 3, W]
         ch = (H - GRID_Y) // 3
         ys = [GRID_Y, GRID_Y + ch, GRID_Y + 2 * ch, H]
         return [
-            (xs[0], ys[0], xs[1], ys[2]),  # shabbat tall
-            (xs[0], ys[2], xs[1], ys[3]),  # newsletter
+            (xs[0], ys[0], xs[1], ys[1]),  # shabbat short (top 1/3)
+            (xs[0], ys[1], xs[1], ys[3]),  # newsletter tall (bottom 2/3)
             (xs[1], ys[0], xs[2], ys[1]),  # weather
             (xs[1], ys[1], xs[2], ys[2]),  # trips
             (xs[1], ys[2], xs[2], ys[3]),  # calendar
@@ -1688,8 +1716,10 @@ def compose_quad(ctx: Ctx, panels: dict | None = None) -> Image.Image:
             img = PANELS[name](ctx, size)
         c.paste(img, (px(box[0]), px(box[1])))
     d = draw(c)
-    for y in sorted({b[1] for b in boxes if b[1] > GRID_Y}):
-        d.line((6, y, W - 6, y), fill=INK, width=2)
+    # horizontal rules per box top edge, so tall slots (thirds) aren't cut through
+    for x0, y, x1, _ in boxes:
+        if y > GRID_Y:
+            d.line((x0 + (6 if x0 == 0 else 0), y, x1 - (6 if x1 >= W else 0), y), fill=INK, width=2)
     for x in sorted({b[0] for b in boxes if b[0] > 0}):
         d.line((x - 1, GRID_Y + 6, x - 1, H - 6), fill=INK, width=2)
     return c
@@ -1921,9 +1951,32 @@ def detail_shabbat(ctx, size):
     return c
 
 
+def detail_newsletter(ctx, size):
+    """Full-page YIOT newsletter: two columns of wrapped highlights, as many as fit."""
+    c, d = canvas(size)
+    w, h = size
+    items = _nl_items(ctx)
+    if not items:
+        text(d, (16, 16), "No newsletter yet: YIOT highlights load Thursday evenings.", F("m", 18))
+        return c
+    colw = (w - 48) // 2
+    rest, y0 = items, 10
+    for ci in range(2):
+        x = 16 + ci * (colw + 16)
+        if ci:
+            d.line((x - 8, 8, x - 8, h - 8), fill=INK, width=1)
+        n, _ = _nl_list(d, rest, x, y0, colw, h - 28, F("sb", 19), F("m", 17), 23, 21, 12)
+        rest = rest[n:]
+    if rest:
+        text(d, (w - 14, h - 8), f"+{len(rest)} more in the newsletter", F("cm", 14), anchor="rd")
+    text(d, (16, h - 8), "Young Israel of Teaneck", F("cm", 14), anchor="ld")
+    return c
+
+
 DETAILS = {"weather": detail_weather, "news": detail_news, "sports": detail_sports, "sky": detail_sky,
            "shabbat": detail_shabbat, "calendar": detail_calendar, "trips": detail_trips,
-           "shopping": detail_shopping, "scoreboard": detail_scoreboard}
+           "shopping": detail_shopping, "scoreboard": detail_scoreboard,
+           "newsletter": detail_newsletter}
 
 
 def compose_page(ctx: Ctx, name: str) -> Image.Image:
@@ -1932,7 +1985,7 @@ def compose_page(ctx: Ctx, name: str) -> Image.Image:
     # the strip becomes a page title bar with position dots
     s, d = canvas((W, STRIP_H))
     titles = {"weather": "Weather", "news": "News & markets", "sports": "Scores & schedule", "sky": "Sky above",
-              "shabbat": "Jewish calendar",
+              "shabbat": "Jewish calendar", "newsletter": "YIOT Newsletter",
               "calendar": "Calendar", "trips": "Trips", "shopping": "Shopping list",
               "scoreboard": "Scoreboard"}
     text(d, (14, STRIP_H / 2 - 1), titles.get(name, name).upper(), F("cb", 19), anchor="lm")

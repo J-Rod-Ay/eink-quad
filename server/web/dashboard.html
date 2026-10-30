@@ -228,7 +228,7 @@ let K = qs.get('k') || ''; try { localStorage.removeItem('quadk'); } catch (e) {
 const base = location.pathname.replace(/\/?(index\.html)?$/, '');
 const api = (p) => K ? `${base}${p}${p.includes('?') ? '&' : '?'}k=${encodeURIComponent(K)}` : `${base}${p}`;
 let S = null, lastV = -1, dirty = false;
-const PAGE_NAMES = {quad:'Quad', weather:'Weather', news:'News', sports:'Sports', sky:'Sky', shabbat:'Jewish calendar', calendar:'Calendar', trips:'Trips', scoreboard:'Scoreboard', shopping:'Shopping'};
+const PAGE_NAMES = {quad:'Quad', weather:'Weather', news:'News', sports:'Sports', sky:'Sky', shabbat:'Jewish calendar', newsletter:'Newsletter', calendar:'Calendar', trips:'Trips', scoreboard:'Scoreboard', shopping:'Shopping'};
 const listUrl = () => `${base}/list`;
 addEventListener('DOMContentLoaded', () => { const f = document.getElementById('listFrame'); if (f) f.src = listUrl() + '?embed=1'; const a = document.getElementById('listLink'); if (a) a.href = listUrl(); });
 
@@ -333,7 +333,7 @@ document.getElementById('form').addEventListener('input', () => { dirty = true; 
 
 function loadThumbs() {
   const t = document.getElementById('thumbs'); t.innerHTML = '';
-  for (const p of (S && S.pages ? S.pages.filter(x => x !== 'quad') : ['weather','news','sports','sky','shabbat'])) {
+  for (const p of (S && S.pages ? S.pages.filter(x => x !== 'quad') : ['weather','news','sports','sky','shabbat','newsletter'])) {
     const img = new Image(); img.src = api(`/api/preview.png?page=${p}&t=${Date.now()}`); img.alt = p; img.title = 'Show ' + p + ' on the board';
     img.onclick = () => act({action:'page', page:p}); t.appendChild(img);
   }

@@ -59,9 +59,14 @@ fl = R.Sighting(callsign="UAL1871", airline="United Airlines", origin="EWR", des
 nearby = [(3, 40, "UAL1871"), (8, 200, "JBU55"), (15, 290, "N123AB"), (21, 100, "DAL402")]
 shop = [{"text": t, "done": d} for t, d in [("Challah", False), ("Eggs", False), ("Grape juice", False), ("Paper towels", False),
                                             ("Bananas", False), ("Coffee beans", False), ("Olive oil", True)]]
-shul = {"highlights": [("Youth event", "Sunday morning youth minyan & brunch"),
-                       ("Guest speaker", "Rabbi visit this Shabbat afternoon"),
-                       ("Chesed", "Meal train sign-ups for the M. family")]}
+shul = {"highlights": [("Youth event", "Sunday morning youth minyan & brunch in the social hall, all grades welcome; parents invited to stay for coffee."),
+                       ("Guest speaker", "Rabbi visit this Shabbat afternoon: a shiur on the parsha after mincha, followed by seudah shlishit."),
+                       ("Chesed", "Meal train sign-ups for the M. family are open through next Thursday. Contact the chesed committee."),
+                       ("Mazal tov", "To the K. family on the birth of a granddaughter, and to the B. family on their son's bar mitzvah."),
+                       ("Shul dinner", "Annual dinner reservations and journal ads are due November 15. Honorees to be announced."),
+                       ("Sisterhood", "Challah bake Wednesday night at 8 PM. Ingredients provided; bring an apron."),
+                       ("Daf yomi", "Nightly daf continues at 9 PM in the beis medrash and on Zoom."),
+                       ("Security", "Please use the main entrance on Shabbat; side doors remain locked.")]}
 ctx = R.Ctx(now=now, cfg=CFG, weather=wx, heads=heads, quotes=qs, teams=teams, featured=fl, nearby=nearby,
             recent=[], day_count=12, shabbat=sh, calendar=cal, trips=[trip], shopping=shop,
             brief="E1003 home: left Shabbat + newsletter, middle weather/TripIt/calendar, right sports.",
@@ -69,5 +74,7 @@ ctx = R.Ctx(now=now, cfg=CFG, weather=wx, heads=heads, quotes=qs, teams=teams, f
 g = R.compose_gray(ctx)
 assert g.size == (1872, 1404), g.size
 g.save(out)
+ctx.page = "newsletter"
+R.compose_gray(ctx).save(out.replace(".png", "-detail.png"))
 R.compose(ctx).save(out.replace(".png", "-1bit.png"))
 print("wrote", out, g.size, "slots:", R.resolve_slots(ctx))

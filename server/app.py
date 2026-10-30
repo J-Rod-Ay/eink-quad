@@ -205,7 +205,7 @@ def row_note(r):
 
 # ---------------------------------------------------------------- the board
 
-PAGES = ["quad", "weather", "news", "sports", "sky", "shabbat", "calendar", "trips", "scoreboard", "shopping"]
+PAGES = ["quad", "weather", "news", "sports", "sky", "shabbat", "newsletter", "calendar", "trips", "scoreboard", "shopping"]
 SECRET_KEYS = ("calendar_ics", "tripit_ics")
 MASK = "•••• saved"
 LIST_TOKEN = os.environ.get("QUAD_LIST_TOKEN", "")       # optional low-privilege token for the list/Siri
@@ -381,7 +381,7 @@ class Board:
         return R.Ctx(now=now, cfg=cfg, weather=sn.get("weather"), heads=sn.get("heads") or [],
                      quotes=sn.get("quotes") or [], teams=sn.get("teams") or [], featured=sn.get("featured"),
                      recent=sn.get("recent") or [], day_count=sn.get("day_count", 0), nearby=sn.get("nearby") or [],
-                     event=sn.get("event"), upcoming=sn.get("upcoming") or [], shabbat=sn.get("shabbat"),
+                     event=sn.get("event"), upcoming=sn.get("upcoming") or [], shabbat=sn.get("shabbat"), shul=sn.get("shul"),
                      calendar=sn.get("calendar"), trips=sn.get("trips"), live=sn.get("live_flight"),
                      shopping=sn.get("shopping") or [], rot_step=self.rot_step, brief=sn.get("brief", ""),
                      sticky=sticky, indoor_f=t_f, indoor_rh=dv.get("rh"), battery=batt,
