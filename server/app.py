@@ -22,6 +22,7 @@ import threading
 import time
 import traceback
 import urllib.parse
+from html import escape as html_escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 os.environ.setdefault("TZ", "America/New_York")
@@ -35,6 +36,7 @@ import render as R  # noqa: E402
 import skyevents  # noqa: E402
 import sources as S  # noqa: E402
 from sky import Sky  # noqa: E402
+import ical  # noqa: E402
 
 # ---------------------------------------------------------------- CONFIG
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -54,10 +56,21 @@ DEFAULTS = {
     "lat": 27.9506, "lon": -82.4572,
     "units": "F",
     "slots": ["weather", "news", "sports", "sky"],
+    "jcal_show": ["hebdate", "shabbat", "parsha", "yomtov", "holiday", "roshchodesh", "fasts"],
+    "pinned": "",                # optional one-line message on the home screen strip
     "interval_min": 10,          # the main cadence: every panel refreshes on this beat
     "sky_min": 10,               # plane panel can run faster (partial refresh, no flash)
     "live_fast": True,           # while a team is playing, sports refreshes every live_min
     "live_min": 3,
+    "live_sec": 30,              # live scores every N s (min 20); 0 = fall back to live_min
+    "scoreboard_auto": False,    # jump to the scoreboard page while a team is live
+    "calendar_ics": [],          # private iCal URLs (secret: masked in the API/dashboard)
+    "tripit_ics": "",            # TripIt private iCal feed (secret)
+    "layout": "quad",            # quad = 2x2 (4) | six = 3x2 (6) | nine = 3x3 (9, E1003 only)
+    "rotate_pin_hours": 3,       # candle lighting within this many hours pins the jcal corner
+    "slot_rotation": [],         # optional: 4 lists of panels each corner cycles through ([] = use slots)
+    "rotate_min": 0,             # how often rotating corners advance (0 = every interval_min beat)
+    "rotate_pin_live": True,     # hold a corner on a live game / airborne flight / near candle lighting / alert
     "full_every_min": 120,       # one flashing full refresh this often, to wipe ghosting
     "quiet": "",                 # "23-6" = no scheduled updates overnight
     "dark": False,
@@ -91,6 +104,12 @@ DEFAULTS = {
     "gray": True,               # full refreshes in 4 grey levels (anti-aliased text)
     "max_partials": 4,
 }
+
+# E1003 (QUAD_MODEL=e1003): the 10.3" panel defaults to the 3x3 home.
+E1003_SLOTS = ["shabbat", "newsletter", "weather", "trips", "calendar", "sports", "scoreboard"]
+if R.MODEL == "e1003":
+    DEFAULTS["layout"] = "thirds"
+    DEFAULTS["slots"] = [p for p in E1003_SLOTS if p in R.CORNER_PANELS][:9]
 
 
 def load_json(path, default):
@@ -186,7 +205,86 @@ def row_note(r):
 
 # ---------------------------------------------------------------- the board
 
-PAGES = ["quad", "weather", "news", "sports", "sky"]
+PAGES = ["quad", "weather", "news", "sports", "sky", "shabbat", "calendar", "trips", "scoreboard", "shopping"]
+SECRET_KEYS = ("calendar_ics", "tripit_ics")
+MASK = "•••• saved"
+LIST_TOKEN = os.environ.get("QUAD_LIST_TOKEN", "")       # optional low-privilege token for the list/Siri
+LIST_PATH = os.environ.get("QUAD_LIST", os.path.join(os.path.dirname(STATE_PATH), "shopping.json"))
+LIST_HTML = os.path.join(HERE, "web", "list.html")
+_list_lock = threading.Lock()
+
+
+def public_cfg(c):
+    """cfg for the dashboard/API: secret feed URLs replaced by a mask."""
+    out = dict(c)
+    for k in SECRET_KEYS:
+        v = out.get(k)
+        if isinstance(v, list):
+            out[k] = [MASK] * len([x for x in v if x])
+        else:
+            out[k] = MASK if v else ""
+    return out
+
+
+def live_period(c=None):
+    c = c or cfg
+    if int(c.get("live_sec") or 0) > 0:
+        return max(20, int(c["live_sec"]))
+    return max(1, int(c.get("live_min") or 3)) * 60
+
+
+def list_load():
+    return load_json(LIST_PATH, {"items": []}).get("items", [])
+
+
+def list_change(op, text="", item_id=""):
+    import uuid
+    with _list_lock:
+        items = list_load()
+        if op == "add":
+            for t in re.split(r"[,\n]+", str(text or "")):
+                t = " ".join(t.split())[:80]
+                if not t:
+                    continue
+                hit = next((i for i in items if i["text"].lower() == t.lower()), None)
+                if hit:
+                    hit["done"] = False
+                else:
+                    items.append({"id": uuid.uuid4().hex[:8], "text": t, "done": False, "at": int(time.time())})
+            items = items[-200:]
+        elif op == "toggle":
+            for i in items:
+                if i["id"] == item_id:
+                    i["done"] = not i["done"]
+        elif op == "remove":
+            items = [i for i in items if i["id"] != item_id]
+        elif op == "clear_checked":
+            items = [i for i in items if not i["done"]]
+        else:
+            raise ValueError("unknown op")
+        save_json(LIST_PATH, {"items": items})
+    board.snap["shopping"] = items
+    with board.cond:
+        if board.page == "shopping" or (board.page == "quad" and "shopping" in R.resolve_slots(board.ctx())):
+            # only redraw when it's on the glass (the page, or a home corner)
+            board.redraw("shopping list changed")
+    return items
+
+
+def touch_icon():
+    """180x180 apple-touch-icon: a checklist, drawn once."""
+    from PIL import ImageDraw as D
+    im = Image.new("RGB", (180, 180), (255, 255, 255))
+    d = D.Draw(im)
+    d.rounded_rectangle((18, 18, 162, 162), radius=26, fill=(17, 17, 17))
+    for i, y in enumerate((50, 88, 126)):
+        d.rectangle((40, y - 12, 64, y + 12), outline=(255, 255, 255), width=4)
+        if i < 2:
+            d.line((44, y, 51, y + 8, 62, y - 9), fill=(255, 255, 255), width=5)
+        d.rounded_rectangle((76, y - 5, 140, y + 5), radius=5, fill=(255, 255, 255))
+    buf = io.BytesIO()
+    im.save(buf, "PNG")
+    return buf.getvalue()
 
 
 class Board:
@@ -204,6 +302,8 @@ class Board:
         self.sticky_until = st.get("sticky_until", 0)
         self.page = "quad"
         self.page_since = 0.0
+        self.auto_sb = False        # on the scoreboard because scoreboard_auto put us there
+        self.rot_step = 0           # slot_rotation position
         self.note = None            # nb.Note while one is on screen
         self.note_until = 0.0
         self.unread = False
@@ -217,7 +317,7 @@ class Board:
         self.device = {"last_seen": 0, "vbat": None, "t": None, "rh": None, "rssi": None, "version": 0,
                        "mode": "live", "boots": 0, "polls": 0}
         self.log = []               # recent events for the dashboard
-        self.final = Image.new("1", (R.W, R.H), 1)
+        self.final = Image.new("1", (R.PW, R.PH), 1)
         self.final_gray = None      # grey rendering of final, when the last full refresh had one
         self.prev_version = self.version
         self.reel = b""
@@ -251,6 +351,15 @@ class Board:
             self.snap["day_count"] = sky.day_stats().count
             self.snap["event"] = events.next_event()
             self.snap["upcoming"] = events.upcoming()
+        elif name == "shabbat":
+            self.snap["shabbat"] = S.shabbat(cfg, force)
+        elif name == "calendar":
+            self.snap["calendar"] = ical.calendar(cfg, force=force)
+        elif name == "trips":
+            tr = ical.trips(cfg, force)
+            self.snap["trips"] = tr
+            seg = ical.airborne(tr)
+            self.snap["live_flight"] = ical.live_position(seg) if seg else None
         elif name == "brief":
             try:
                 h = time.localtime().tm_hour
@@ -272,7 +381,9 @@ class Board:
         return R.Ctx(now=now, cfg=cfg, weather=sn.get("weather"), heads=sn.get("heads") or [],
                      quotes=sn.get("quotes") or [], teams=sn.get("teams") or [], featured=sn.get("featured"),
                      recent=sn.get("recent") or [], day_count=sn.get("day_count", 0), nearby=sn.get("nearby") or [],
-                     event=sn.get("event"), upcoming=sn.get("upcoming") or [], brief=sn.get("brief", ""),
+                     event=sn.get("event"), upcoming=sn.get("upcoming") or [], shabbat=sn.get("shabbat"),
+                     calendar=sn.get("calendar"), trips=sn.get("trips"), live=sn.get("live_flight"),
+                     shopping=sn.get("shopping") or [], rot_step=self.rot_step, brief=sn.get("brief", ""),
                      sticky=sticky, indoor_f=t_f, indoor_rh=dv.get("rh"), battery=batt,
                      on_usb=dv.get("mode") == "live", cycle=self.cycle, updated=self.updated or now,
                      page=page or self.page)
@@ -303,8 +414,8 @@ class Board:
         self.updated = time.time()
         new = R.compose(self.ctx())
         # "Updated 3:40" alone is not worth a refresh: compare without the header
-        old_body = self.final.crop((0, R.HEAD_H, R.W, R.H))
-        new_body = new.crop((0, R.HEAD_H, R.W, R.H))
+        old_body = self.final.crop((0, R.px(R.HEAD_H), R.PW, R.PH))
+        new_body = new.crop((0, R.px(R.HEAD_H), R.PW, R.PH))
         changed = ImageChops.logical_xor(old_body, new_body).getbbox() is not None
         self.render_ms = int((time.time() - t0) * 1000)
         full = full or self.force_full or (
@@ -323,7 +434,7 @@ class Board:
             else:
                 self._commit([(new, 0, True)], why)
         else:
-            regions = R.region_frames(self.final, new)
+            regions = R.region_frames(self.final, new, R.layout_of(cfg))
             # Many changed regions (a page switch) read better as one sweep than
             # as five sequential ~1s partials.
             if len(regions) > 3 or not regions:
@@ -343,7 +454,7 @@ class Board:
                 self.unread = False
                 self.note_event("note dwell over")
                 self.redraw("back from note", full=True)
-            if self.page != "quad" and now - self.page_since > cfg["page_timeout_s"]:
+            if self.page != "quad" and now - self.page_since > cfg["page_timeout_s"] and not self.auto_sb:
                 self.page = "quad"
                 self.redraw("page timeout", major=True)
         self.check_notes()
@@ -353,7 +464,7 @@ class Board:
         beat = int(now // iv)
         due = []
         if self.beats.get("main") != beat:
-            due = ["weather", "news", "sports", "sky", "brief"]
+            due = ["weather", "news", "sports", "sky", "shabbat", "calendar", "trips", "brief"]
             self.beats["main"] = beat
             with self.cond:
                 self.cycle += 1
@@ -364,12 +475,18 @@ class Board:
                 sb = int(now // 60)
             if self.beats.get("sky") != sb:
                 due.append("sky")
-            live = self.snap.get("live")
+            live = self.snap.get("live") or any(
+                r.next and r.next.start - 300 <= now <= r.next.start + 5400 for r in (self.snap.get("teams") or []))
             if live and cfg.get("live_fast"):
-                lb = int(now // (max(1, cfg["live_min"]) * 60))
+                lb = int(now // live_period())
                 if self.beats.get("live") != lb:
                     due.append("sports")
                     self.beats["live"] = lb
+            if ical.airborne(self.snap.get("trips")):     # a flight in the air: track it every 3 min
+                fb = int(now // 180)
+                if self.beats.get("flight") != fb:
+                    due.append("trips")
+                    self.beats["flight"] = fb
         if "sky" in due:
             self.beats["sky"] = int(now // (max(1, cfg["sky_min"]) * 60))
         if not due:
@@ -380,7 +497,25 @@ class Board:
             except Exception:
                 traceback.print_exc()
         with self.cond:
+            if "weather" in due:      # rotating corners advance on the regular beat only (no extra refreshes)
+                rm = int(cfg.get("rotate_min") or 0)
+                self.rot_step = int(now // (max(rm, cfg["interval_min"]) * 60)) if rm else self.cycle
+            self.auto_scoreboard()
             self.redraw("scheduled " + ",".join(due), major="weather" in due)
+
+    def auto_scoreboard(self):
+        """scoreboard_auto: jump to the scoreboard when a team goes live, home when it's over."""
+        live = bool(self.snap.get("live"))
+        if cfg.get("scoreboard_auto") and live and self.page == "quad" and self.note is None:
+            self.page, self.page_since, self.auto_sb = "scoreboard", time.time(), True
+            self.force_full = True
+            self.note_event("game live: scoreboard")
+        elif self.auto_sb and (not live or not cfg.get("scoreboard_auto")):
+            self.auto_sb = False
+            if self.page == "scoreboard":
+                self.page = "quad"
+                self.force_full = True
+                self.note_event("games over: home")
 
     # -- notes from the note box (optional)
     def check_notes(self):
@@ -444,7 +579,7 @@ class Board:
                     return self.redraw("home", major=True)
                 self.note_event("manual refresh")
         if b == 0:
-            for name in ("weather", "news", "sports", "sky"):
+            for name in ("weather", "news", "sports", "sky", "shabbat", "calendar", "trips"):
                 try:
                     self.take(name, force=True)
                 except Exception:
@@ -454,6 +589,7 @@ class Board:
                 self.redraw("refresh button", major=True)
             return
         with self.cond:
+            self.auto_sb = False
             i = PAGES.index(self.page)
             self.page = PAGES[(i + (1 if b == 2 else -1)) % len(PAGES)]
             self.page_since = time.time()
@@ -461,6 +597,7 @@ class Board:
 
     def goto(self, page):
         with self.cond:
+            self.auto_sb = False
             self.page = page if page in PAGES else "quad"
             self.page_since = time.time()
             self.redraw(f"page {self.page} (dashboard)", major=True)
@@ -480,9 +617,94 @@ def scheduler():
 
 # ---------------------------------------------------------------- HTTP
 
+# ---------------------------------------------------------------- auth: sessions + rate limit
+
+import hashlib  # noqa: E402
+import hmac  # noqa: E402
+import secrets as _secrets  # noqa: E402
+from collections import deque  # noqa: E402
+
+SESSION_SECRET = os.environ.get("QUAD_SESSION_SECRET", "")
+if not SESSION_SECRET:
+    SESSION_SECRET = _secrets.token_hex(32)
+    print("[auth] QUAD_SESSION_SECRET not set: sessions last until restart", flush=True)
+SESSION_DAYS = 180
+COOKIES = {"admin": "quad_s", "list": "quad_l"}
+FAIL_MAX, FAIL_WINDOW, BLOCK_S = 10, 600, 900
+_fails: dict = {}
+_blocked: dict = {}
+_auth_lock = threading.Lock()
+
+
+def _scope_key(scope):
+    tok = ADMIN_TOKEN if scope == "admin" else (LIST_TOKEN or ADMIN_TOKEN)
+    # rotating the token invalidates every cookie issued for it
+    return hmac.new(SESSION_SECRET.encode(), f"{scope}:{tok}".encode(), hashlib.sha256).digest()
+
+
+def make_session(scope):
+    exp = int(time.time()) + SESSION_DAYS * 86400
+    sig = hmac.new(_scope_key(scope), f"{scope}.{exp}".encode(), hashlib.sha256).hexdigest()[:40]
+    return f"{scope}.{exp}.{sig}"
+
+
+def check_session(val, scope):
+    try:
+        sc, exp, sig = val.split(".")
+        if sc != scope or int(exp) < time.time():
+            return False
+        good = hmac.new(_scope_key(scope), f"{sc}.{exp}".encode(), hashlib.sha256).hexdigest()[:40]
+        return hmac.compare_digest(sig, good)
+    except (ValueError, AttributeError):
+        return False
+
+
+def tok_eq(a, b):
+    return bool(a) and bool(b) and hmac.compare_digest(str(a).encode(), str(b).encode())
+
+
+def note_fail(ip):
+    now = time.time()
+    with _auth_lock:
+        dq = _fails.setdefault(ip, deque())
+        dq.append(now)
+        while dq and now - dq[0] > FAIL_WINDOW:
+            dq.popleft()
+        if len(dq) >= FAIL_MAX:
+            _blocked[ip] = now + BLOCK_S
+            dq.clear()
+            print(f"[auth] blocking {ip} for {BLOCK_S // 60} min after {FAIL_MAX} failed logins", flush=True)
+
+
+def is_blocked(ip):
+    with _auth_lock:
+        until = _blocked.get(ip)
+        if until and until > time.time():
+            return True
+        _blocked.pop(ip, None)
+        return False
+
+
+LOGIN_HTML = """<!doctype html><html lang=en><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Quad Board</title>
+<style>body{font:17px -apple-system,system-ui,sans-serif;display:grid;place-items:center;min-height:90vh;margin:0;
+padding:env(safe-area-inset-top) 16px env(safe-area-inset-bottom)}form{display:grid;gap:10px;width:min(320px,90vw)}
+input,button{font-size:17px;padding:12px;border-radius:10px;border:1.5px solid #111}button{background:#111;color:#fff}
+p{color:#a00;margin:0}</style></head><body><form method=post action="login">
+<h2 style="margin:0">Quad Board</h2>%s<input type=hidden name=next value="%s">
+<input type=password name=key placeholder="%s" autocomplete=current-password autofocus required>
+<button>Sign in</button></form></body></html>"""
+
+
 class H(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "quad"
+    sys_version = ""
+
+    def send_header(self, keyword, value):
+        if keyword.lower() == "server":       # no "quad Python/3.x" fingerprint
+            return
+        super().send_header(keyword, value)
 
     def log_message(self, fmt, *args):
         if os.environ.get("QUAD_VERBOSE"):
@@ -512,25 +734,124 @@ class H(BaseHTTPRequestHandler):
             p = p[5:] or "/"
         return p
 
+    # -- auth
+    def ip(self):
+        peer = self.client_address[0]
+        xff = self.headers.get("X-Forwarded-For")
+        if xff and peer in ("127.0.0.1", "::1", "::ffff:127.0.0.1"):    # only trust our own Caddy
+            return xff.split(",")[-1].strip() or peer
+        return peer
+
+    def cookies(self):
+        out = {}
+        for part in (self.headers.get("Cookie") or "").split(";"):
+            if "=" in part:
+                k, v = part.strip().split("=", 1)
+                out[k] = v
+        return out
+
+    def presented(self):
+        """A key in the URL or Authorization header (cookies are checked separately)."""
+        return self.q().get("k") or (self.headers.get("Authorization") or "").replace("Bearer ", "").strip()
+
+    def authed(self, scope="admin"):
+        """admin: admin key or admin session. list: also the list token / list session."""
+        tok = self.presented()
+        ck = self.cookies()
+        if tok_eq(tok, ADMIN_TOKEN) or check_session(ck.get(COOKIES["admin"], ""), "admin"):
+            return "admin"
+        if scope == "list" and ((LIST_TOKEN and tok_eq(tok, LIST_TOKEN)) or check_session(ck.get(COOKIES["list"], ""), "list")):
+            return "list"
+        if tok or ck.get(COOKIES["admin"]) or ck.get(COOKIES["list"]):
+            note_fail(self.ip())                 # a wrong key or a forged/expired cookie
+        return None
+
     def admin(self):
-        tok = self.q().get("k") or (self.headers.get("Authorization") or "").replace("Bearer ", "")
-        return tok == ADMIN_TOKEN
+        return self.authed("admin") == "admin"
 
-    def do_HEAD(self):
-        self.do_GET()
+    def cookie_hdr(self, scope, value, max_age):
+        return (f"{COOKIES[scope]}={value}; Path=/; Max-Age={max_age}; Secure; HttpOnly; SameSite=Strict")
 
+    def redirect(self, loc, cookies=()):
+        body = b""
+        self.send_response(302)
+        self.send_header("Location", loc)
+        for c in cookies:
+            self.send_header("Set-Cookie", c)
+        self.send_header("Content-Length", "0")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+
+    def strip_k(self):
+        """Same URL without k= (after it has been swapped for a cookie)."""
+        u = urllib.parse.urlsplit(self.path)
+        qs = [(k, v) for k, v in urllib.parse.parse_qsl(u.query, keep_blank_values=True) if k != "k"]
+        return urllib.parse.urlunsplit(("", "", u.path, urllib.parse.urlencode(qs), ""))
+
+    def prefix(self):
+        return "/quad" if urllib.parse.urlsplit(self.path).path.startswith("/quad") else ""
+
+    def page_login(self, scope, who):
+        """?k=... on an HTML page: set the session cookie and drop k from the URL."""
+        if self.q().get("k") and who:
+            sc = "admin" if who == "admin" else "list"
+            return self.redirect(self.strip_k() or "/", [self.cookie_hdr(sc, make_session(sc), SESSION_DAYS * 86400)])
+        return None
+
+    def login_form(self, nxt, err=""):
+        nxt = html_escape(nxt)
+        body = LOGIN_HTML % ((f"<p>{html_escape(err)}</p>" if err else ""), nxt,
+                             "List key or admin key" if "/list" in nxt else "Admin key")
+        return self.send(401 if err else 200, body, "text/html; charset=utf-8")
+
+    # -- GET
     def do_GET(self):
         p = self.route()
         try:
             if p == "/api/device/poll":
-                return self.device_poll()
+                return self.device_poll()          # device auth unchanged: its own token, its own path
             if p == "/healthz":
                 return self.send(200, "ok", "text/plain")
-            if not self.admin():
+            if p == "/apple-touch-icon.png":
+                return self.send(200, touch_icon(), "image/png", {"Cache-Control": "max-age=86400"})
+            if p == "/list.webmanifest":
+                return self.send(200, {"name": "Quad List", "short_name": "Quad List", "display": "standalone",
+                                       "start_url": "list", "background_color": "#ffffff", "theme_color": "#ffffff",
+                                       "icons": [{"src": "apple-touch-icon.png", "sizes": "180x180", "type": "image/png"}]},
+                                 "application/manifest+json")
+            if is_blocked(self.ip()):
+                return self.send(429, {"error": "too many failed attempts, try again later"}, headers={"Retry-After": BLOCK_S})
+            if p == "/login":
+                return self.login_form(self.q().get("next", self.prefix() + "/"))
+            if p == "/logout":
+                return self.redirect(self.prefix() + "/login", [self.cookie_hdr("admin", "", 0), self.cookie_hdr("list", "", 0)])
+            if p in ("/list", "/list.html"):
+                who = self.authed("list")
+                r = self.page_login("list", who)
+                if r is not None or who is None:
+                    return r if r is not None else self.login_form(self.path.split("?")[0])
+                with open(LIST_HTML, "rb") as f:
+                    return self.send(200, f.read(), "text/html; charset=utf-8")
+            if p.startswith("/api/list"):
+                who = self.authed("list")
+                if who is None:
+                    return self.send(404, {"error": "not found"})
+                if p == "/api/list":
+                    return self.send(200, {"items": list_load()})
+                if p == "/api/list/add":
+                    return self.list_add(self.q().get("item", ""))
                 return self.send(404, {"error": "not found"})
+            who = self.authed("admin")
             if p in ("/", "/index.html"):
+                r = self.page_login("admin", who if who == "admin" else None)
+                if r is not None:
+                    return r
+                if who != "admin":
+                    return self.send(404, {"error": "not found"})
                 with open(DASH_HTML, "rb") as f:
                     return self.send(200, f.read(), "text/html; charset=utf-8")
+            if who != "admin":
+                return self.send(404, {"error": "not found"})
             if p == "/api/screen.png":
                 with board.cond:
                     img, v = board.final, board.version
@@ -551,13 +872,61 @@ class H(BaseHTTPRequestHandler):
             traceback.print_exc()
             return self.send(500, {"error": str(e)})
 
+    def list_add(self, item):
+        item = str(item or "").strip()
+        if not item:
+            return self.send(400, "Nothing to add", "text/plain; charset=utf-8")
+        before = {i["text"].lower() for i in list_load() if not i["done"]}
+        items = list_change("add", item)
+        added = [i["text"] for i in items if not i["done"] and i["text"].lower() not in before]
+        msg = ("Added " + ", ".join(added)) if added else "Already on the list"
+        return self.send(200, msg, "text/plain; charset=utf-8")
+
+    # -- POST
     def do_POST(self):
         p = self.route()
-        if not self.admin():
-            return self.send(404, {"error": "not found"})
+        if is_blocked(self.ip()):
+            return self.send(429, {"error": "too many failed attempts, try again later"}, headers={"Retry-After": BLOCK_S})
         try:
             n = int(self.headers.get("Content-Length") or 0)
-            body = json.loads(self.rfile.read(min(n, 100_000)) or b"{}")
+            raw = self.rfile.read(min(n, 100_000)) if n else b""
+            ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+            if p == "/login":
+                f = {k: v[-1] for k, v in urllib.parse.parse_qs(raw.decode("utf-8", "replace")).items()}
+                key, nxt = f.get("key", ""), f.get("next", self.prefix() + "/")
+                if not nxt.startswith("/") or nxt.startswith("//"):
+                    nxt = self.prefix() + "/"
+                if tok_eq(key, ADMIN_TOKEN):
+                    sc = "admin"
+                elif LIST_TOKEN and tok_eq(key, LIST_TOKEN) and "/list" in nxt:
+                    sc = "list"
+                else:
+                    note_fail(self.ip())
+                    return self.login_form(nxt, "That key didn't work")
+                return self.redirect(nxt, [self.cookie_hdr(sc, make_session(sc), SESSION_DAYS * 86400)])
+            if p == "/logout":
+                return self.redirect(self.prefix() + "/login", [self.cookie_hdr("admin", "", 0), self.cookie_hdr("list", "", 0)])
+            if p.startswith("/api/list"):
+                if self.authed("list") is None:
+                    return self.send(404, {"error": "not found"})
+                if p == "/api/list/add":       # Siri Shortcut: text body, form, JSON, or ?item=
+                    item = self.q().get("item", "")
+                    if not item and raw:
+                        if ctype == "application/x-www-form-urlencoded":
+                            item = (urllib.parse.parse_qs(raw.decode("utf-8", "replace")).get("item") or [""])[-1]
+                        elif ctype == "application/json":
+                            j = json.loads(raw or b"{}")
+                            item = j.get("item") or j.get("text") or "" if isinstance(j, dict) else str(j)
+                        else:
+                            item = raw.decode("utf-8", "replace")
+                    return self.list_add(item)
+                if p == "/api/list":
+                    b = json.loads(raw or b"{}")
+                    return self.send(200, {"items": list_change(b.get("op", ""), b.get("text", ""), b.get("id", ""))})
+                return self.send(404, {"error": "not found"})
+            if not self.admin():
+                return self.send(404, {"error": "not found"})
+            body = json.loads(raw or b"{}")
             if p == "/api/config":
                 return self.send(200, self.set_config(body))
             if p == "/api/action":
@@ -578,7 +947,7 @@ class H(BaseHTTPRequestHandler):
         with board.cond:
             dv = dict(board.device)
             st = {
-                "cfg": cfg, "defaults": DEFAULTS, "version": board.version, "page": board.page,
+                "cfg": public_cfg(cfg), "defaults": DEFAULTS, "pages": PAGES, "corner_panels": R.CORNER_PANELS, "version": board.version, "page": board.page,
                 "cycle": board.cycle, "sticky": board.sticky, "sticky_until": board.sticky_until,
                 "note": (board.note.name or "someone") if board.note else None,
                 "updated": board.updated, "render_ms": board.render_ms,
@@ -593,11 +962,14 @@ class H(BaseHTTPRequestHandler):
             "quotes": S.quotes_status(), "sports": S.sports_status(), "brief": S.brief_status(),
             "sky": {"age_s": round(now - sky.updated_at) if sky and sky.updated_at else None,
                     "error": sky.last_error if sky else None},
+            "shabbat": S.shabbat_status(),
+            "calendar": ical.calendar_status(cfg), "trips": ical.trips_status(cfg),
             "events": events.status if events else None,
         }
         st["feeds"] = {k: v[0] for k, v in S.WSJ_FEEDS.items()}
         st["teams"] = {k: v[0] for k, v in S.TEAMS.items()}
         st["panels"] = list(R.PANELS)
+        st["jcal_options"] = S.JCAL_OPTIONS
         st["notes_available"] = bool(nb is not None and notes_db() is not None)
         return st
 
@@ -607,6 +979,25 @@ class H(BaseHTTPRequestHandler):
         new = dict(cfg)
         for k, v in body.items():
             if k not in allowed:
+                continue
+            if k in SECRET_KEYS:
+                vals = v if isinstance(v, list) else [v]
+                if any(MASK in str(x) for x in vals):
+                    continue                                   # untouched masked value: keep the saved link
+                if any(str(x).strip().lower() == "none" for x in vals):
+                    v = [] if isinstance(DEFAULTS[k], list) else ""
+                elif any(str(x).strip() and not re.match(r"(?i)^(https?|webcal)://", str(x).strip()) for x in vals):
+                    raise ValueError(f"{k}: expected an https:// or webcal:// link")
+            if k == "slot_rotation":
+                if not v:
+                    new[k] = []
+                    continue
+                if not (isinstance(v, list) and len(v) == 4 and all(isinstance(x, list) and x for x in v)):
+                    raise ValueError("slot_rotation must be 4 non-empty lists of panels")
+                bad = {str(n) for x in v for n in x} - set(R.CORNER_PANELS)
+                if bad:
+                    raise ValueError(f"slot_rotation: not a corner panel: {', '.join(sorted(bad))}")
+                new[k] = [list(dict.fromkeys(str(n) for n in x)) for x in v]
                 continue
             dv = DEFAULTS[k]
             if isinstance(dv, bool):
@@ -622,8 +1013,23 @@ class H(BaseHTTPRequestHandler):
             else:
                 v = str(v)
             new[k] = v
-        if sorted(new["slots"]) != sorted(R.PANELS):
-            raise ValueError("slots must use each panel exactly once")
+        if new.get("layout") not in R.LAYOUTS:
+            raise ValueError("layout must be one of: " + ", ".join(R.LAYOUTS))
+        n = R.LAYOUTS[new["layout"]]
+        sl = new["slots"]
+        if len(sl) != n or len(set(sl)) != n or any(x not in R.CORNER_PANELS for x in sl):
+            raise ValueError(f"{new['layout']} needs {n} different panels from: {', '.join(R.CORNER_PANELS)}")
+        if new.get("slot_rotation") and len(new["slot_rotation"]) != n:
+            raise ValueError(f"slot_rotation needs {n} lists for the {new['layout']} layout")
+        new["pinned"] = " ".join(str(new.get("pinned") or "").split())[:300]
+        new["jcal_show"] = [x for x in dict.fromkeys(new.get("jcal_show") or []) if x in S.JCAL_OPTIONS]
+        if new.get("live_sec"):
+            new["live_sec"] = max(20, int(new["live_sec"]))
+        changed = {k for k in DEFAULTS if new.get(k) != cfg.get(k)}
+        only_visual = changed <= {"pinned", "jcal_show", "scoreboard_auto", "live_sec", "live_min", "layout", "slots",
+                                  "slot_rotation", "rotate_min", "rotate_pin_live", "rotate_pin_hours"}
+        if "layout" in changed:
+            board.force_full = True
         moved = (new["lat"], new["lon"], new["radar_nm"], new["iss"], new["launch"]) != \
                 (cfg["lat"], cfg["lon"], cfg["radar_nm"], cfg["iss"], cfg["launch"])
         cfg.clear()
@@ -633,14 +1039,15 @@ class H(BaseHTTPRequestHandler):
         if moved:
             start_sky()
         # data-shaping changes need a refetch; purely visual ones just a redraw
-        for name in ("weather", "news", "sports", "sky"):
+        for name in (["shabbat"] if "jcal_show" in changed else []) if only_visual else \
+                ("weather", "news", "sports", "sky", "shabbat", "calendar", "trips"):
             try:
                 board.take(name, force=name in ("weather",) and moved)
             except Exception:
                 traceback.print_exc()
         with board.cond:
             board.redraw("settings changed", major=True)
-        return {"ok": True, "cfg": cfg}
+        return {"ok": True, "cfg": public_cfg(cfg)}
 
     def action(self, body):
         a = body.get("action")
@@ -733,7 +1140,8 @@ class Server(ThreadingHTTPServer):
 
 
 def warm():
-    for name in ("weather", "news", "sports", "sky"):
+    board.snap["shopping"] = list_load()
+    for name in ("weather", "news", "sports", "sky", "shabbat", "calendar", "trips"):
         try:
             board.take(name)
         except Exception:

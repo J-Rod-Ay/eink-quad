@@ -1,19 +1,20 @@
 #pragma once
 #include <Arduino.h>
+#include "board.h"
 
 // The panel as a 1-bit framebuffer with two ways to show it:
 //   full()    -- the classic flashing refresh, ~4s, clears all ghosting
 //   partial() -- a windowed fast refresh, no flash, the thing that makes
 //                animation possible at all on e-paper
 //
-// Bit layout everywhere: 800x480, MSB = leftmost pixel, set bit = white,
-// 100 bytes per row. That is PIL mode "1" packing, so server frames drop in.
+// Bit layout everywhere: EPD_W x EPD_H (800x480 E1001, 1872x1404 E1003), MSB = leftmost pixel, set bit = white,
+// W/8 bytes per row. That is PIL mode "1" packing, so server frames drop in.
 namespace display {
 
-static const int W = 800;
-static const int H = 480;
+static const int W = EPD_W;
+static const int H = EPD_H;
 static const int STRIDE = W / 8;
-static const size_t BYTES = (size_t)STRIDE * H;   // 48000
+static const size_t BYTES = (size_t)STRIDE * H;   // 48000 / 328536
 
 void begin();
 
@@ -29,11 +30,12 @@ void partial(int x0, int y0, int x1, int y1);
 // Full flashing refresh of the whole buffer.
 void full();
 
-// Full refresh in 4 grey levels. g2 = 2bpp packed, 4 px per byte, MSB first,
-// 0=black..3=white. The 1-bit buffer() should already hold the thresholded
-// version, which is what later partial refreshes diff against.
-static const size_t GRAY_BYTES = (size_t)W * H / 4;   // 96000
-void fullGray(const uint8_t *g2);
+// Full grey refresh. E1001: 4 levels, 2bpp packed, 4 px per byte, MSB first,
+// 0=black..3=white. E1003: 16 levels, 4bpp, 2 px per byte, even x in the high
+// nibble, 0=black..15=white. The 1-bit buffer() should already hold the
+// thresholded version, which is what later partial refreshes diff against.
+static const size_t GRAY_BYTES = (size_t)EPD_BUF_LEN;   // 96000 / 1314144
+void fullGray(const uint8_t *g);
 
 // Power the controller down. The image stays; partial() wakes it again.
 void sleep();

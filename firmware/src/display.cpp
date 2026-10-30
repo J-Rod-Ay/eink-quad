@@ -2,6 +2,9 @@
 
 #include <TFT_eSPI.h>
 
+#ifndef QUAD_E1003
+// ================================================================ E1001 (UC8179)
+
 // Seeed_GFX has updataPartial(), but it sends only the new image, and parks
 // the controller in deep sleep after every call -- which wipes the controller's
 // record of the old image, so the next partial waveform is computed against
@@ -135,31 +138,88 @@ void fullGray(const uint8_t *g2) {
 
 void sleep() { epaper.parkController(); }
 
+}  // namespace display
+
+#else
+// ================================================================ E1003 (ED103TC2 + TCON)
+// The IT8951-class TCON keeps its own framebuffer and computes waveforms
+// against it, so none of the UC8179 old/new juggling is needed: Seeed_GFX's
+// updataPartial() (1bpp, fast mode) and update() (1bpp full / 4bpp grey) are
+// used as-is.
+static EPaper epaper;
+
+namespace display {
+
+static uint8_t *saved1 = nullptr;   // 1-bit buffer kept across grey refreshes
+
+void begin() {
+  epaper.begin();
+  if (!saved1) saved1 = (uint8_t *)ps_malloc(BYTES);
+}
+
+uint8_t *buffer() { return (uint8_t *)epaper.getPointer(); }
+
+void partial(int x0, int y0, int x1, int y1) {
+  x0 = max(0, x0) & ~15;              // TCON wants 16-px aligned windows
+  x1 = min(W, (x1 + 15) & ~15);
+  y0 = max(0, y0);
+  y1 = min(H, y1);
+  if (x1 <= x0 || y1 <= y0) return;
+  epaper.updataPartial(x0, y0, x1 - x0, y1 - y0);
+}
+
+void full() { epaper.update(); }
+
+// g = 4bpp, 2 px per byte, even x high nibble, 0=black..15=white -- exactly the
+// layout of Seeed's 4bpp grey sprite, so it is copied straight in.
+void fullGray(const uint8_t *g) {
+  memcpy(saved1, buffer(), BYTES);
+  epaper.initGrayMode(GRAY_LEVEL16);          // reallocates the sprite at 4bpp
+  memcpy(epaper.getPointer(), g, GRAY_BYTES);
+  epaper.update();
+  epaper.deinitGrayMode();                    // back to the 1bpp sprite
+  memcpy(buffer(), saved1, BYTES);
+}
+
+void sleep() { epaper.sleep(); }
+
+}  // namespace display
+#endif
+
+namespace display {
+
 void drawMessage(const char *title, const MsgLine *lines, int n,
                  const char *footer) {
   epaper.fillSprite(TFT_WHITE);
   epaper.setTextColor(TFT_BLACK, TFT_WHITE, true);
   epaper.setTextDatum(TL_DATUM);
-  const int X = 48;
+#ifdef QUAD_E1003
+  const int K = 2;   // ~227 dpi vs ~125 dpi: double everything
+#else
+  const int K = 1;
+#endif
+  epaper.setTextSize(K);
+  const int X = 48 * K;
   epaper.setFreeFont(&FreeSansBold18pt7b);
-  epaper.drawString(title, X, 48);
-  epaper.fillRect(X, 104, W - 2 * X, 2, TFT_BLACK);
-  int y = 126;
+  epaper.drawString(title, X, 48 * K);
+  epaper.fillRect(X, 104 * K, W - 2 * X, 2 * K, TFT_BLACK);
+  int y = 126 * K;
   for (int i = 0; i < n; i++) {
     if (lines[i].big) {
       epaper.setFreeFont(&FreeSansBold24pt7b);
       epaper.drawString(lines[i].text, X, y);
-      y += 62;
+      y += 62 * K;
     } else {
       epaper.setFreeFont(&FreeSans12pt7b);
       epaper.drawString(lines[i].text, X, y);
-      y += 34;
+      y += 34 * K;
     }
   }
   if (footer) {
     epaper.setFreeFont(&FreeSans12pt7b);
-    epaper.drawString(footer, X, H - 46);
+    epaper.drawString(footer, X, H - 46 * K);
   }
+  epaper.setTextSize(1);
   full();
 }
 

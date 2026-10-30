@@ -392,6 +392,7 @@ class Game:
     opp_logo: str = ""
     event_id: str = ""
     odds: "Odds | None" = None
+    situation: dict = field(default_factory=dict)   # live only: down/distance, outs, bases (scoreboard page)
 
     @property
     def ats(self):
@@ -541,9 +542,18 @@ def team_news(key, force=False):
     return c.get(fetch, force) or []
 
 
-def team_games(key, fast=False, force=False):
+def live_ttl(cfg):
+    """Seconds between ESPN polls while a team is live: live_sec (min 20), else live_min, else 90."""
+    if int(cfg.get("live_sec") or 0) > 0:
+        return max(20, int(cfg["live_sec"])) - 3      # a hair under the beat so each beat refetches
+    if cfg.get("live_min"):
+        return max(1, int(cfg["live_min"])) * 60 - 3
+    return 90
+
+
+def team_games(key, fast=False, force=False, ttl=90):
     c = _teams.setdefault(key, Cached(900))
-    c.ttl = 90 if fast else 900
+    c.ttl = ttl if fast else 900
 
     def fetch():
         return _fetch_team(key)
@@ -650,6 +660,41 @@ def attach_odds(key, g: Game):
     g.odds = c.get(fetch_odds)
 
 
+_sit = {}
+
+
+def _fetch_situation(sport, league, event_id):
+    j = _espn(f"https://site.api.espn.com/apis/site/v2/sports/{sport}/{league}/summary", {"event": event_id})
+    sit = j.get("situation") or {}
+    if not sit:
+        comps = (j.get("header") or {}).get("competitions") or [{}]
+        sit = comps[0].get("situation") or {}
+    out = {}
+    for k in ("downDistanceText", "shortDownDistanceText", "possessionText", "balls", "strikes", "outs",
+              "onFirst", "onSecond", "onThird", "isRedZone"):
+        if k in sit:
+            out[k] = sit[k]
+    lp = sit.get("lastPlay") or {}
+    if lp.get("text"):
+        out["lastPlay"] = lp["text"]
+    return out
+
+
+def attach_situation(key, g: Game):
+    """Down & distance / count & bases for a live game (ESPN summary; best effort)."""
+    if not g or g.state != "in" or not g.event_id:
+        return
+    _, sport, league, _ = TEAMS[key]
+    if sport not in ("football", "baseball"):
+        return
+    c = _sit.setdefault(g.event_id, Cached(17))
+
+    def fetch_situation():
+        return _fetch_situation(sport, league, g.event_id)
+    fetch_situation.__name__ = f"situation_{key}"
+    g.situation = c.get(fetch_situation) or {}
+
+
 def sports(cfg, force=False):
     """[TeamRow] ordered live -> fresh results -> soonest next game, plus the
     keys of teams playing right now (the caller refreshes faster then)."""
@@ -659,7 +704,9 @@ def sports(cfg, force=False):
     for key in cfg.get("teams", []):
         if key not in TEAMS:
             continue
-        games = team_games(key, fast=key in _live_keys, force=force)
+        cached = (_teams.get(key).value if key in _teams else None) or []
+        starting = any(g.state == "pre" and g.start - 300 <= now <= g.start + 5400 for g in cached)
+        games = team_games(key, fast=key in _live_keys or starting, force=force, ttl=live_ttl(cfg))
         row = TeamRow(key=key, label=TEAMS[key][0], record=games[0].record if games else "",
                       logo=next((g.our_logo for g in games if g.our_logo), ""))
         row.live = next((g for g in games if g.state == "in"), None)
@@ -668,6 +715,10 @@ def sports(cfg, force=False):
         row.next = next((g for g in games if g.state == "pre" and g.start > now - 3 * 3600), None)
         if row.live:
             live.append(key)
+            try:
+                attach_situation(key, row.live)
+            except Exception as e:
+                print(f"[situation] {key}: {e}", flush=True)
         if cfg.get("odds", True):
             try:
                 attach_odds(key, row.live)
@@ -763,3 +814,168 @@ def brief(cfg, heads, wx, games, force=False) -> str:
 
 def brief_status():
     return {**_brief.status(), "text": _brief.value}
+
+
+# ============================================================ shabbat (Hebcal)
+
+# Candle-lighting location: 143 Midwood Road, Teaneck, NJ 07666
+# (US Census geocoder, Public_AR_Current). Separate from the weather lat/lon.
+SHABBAT_LAT = 40.887489
+SHABBAT_LON = -74.000024
+SHABBAT_TZ = "America/New_York"
+
+
+@dataclass
+class Shabbat:
+    parsha: str = ""
+    candles: float | None = None      # epoch of next candle lighting
+    havdalah: float | None = None
+    holiday: str = ""                 # next upcoming major holiday (within ~60 days)
+    holiday_date: str = ""            # YYYY-MM-DD of its first day
+    holiday_candles: float | None = None
+    location: str = ""
+    hebdate: str = ""                 # today's Hebrew date, e.g. "10th of Cheshvan 5787"
+    omer: str = ""                    # today's Omer count, in season
+    daf: str = ""                     # today's daf yomi (only fetched when enabled)
+    events: list = field(default_factory=list)   # [JEvent], upcoming, sorted
+
+
+@dataclass
+class JEvent:
+    kind: str          # yomtov | holiday | roshchodesh | fasts | minor | modern | specialshabbat
+    date: str          # YYYY-MM-DD
+    title: str
+    extra: str = ""    # e.g. "candles 4:10 PM" or "5:48 AM – 5:08 PM"
+
+
+JCAL_OPTIONS = ["hebdate", "shabbat", "parsha", "yomtov", "holiday", "roshchodesh", "fasts",
+                "minor", "modern", "specialshabbat", "omer", "dafyomi"]
+JCAL_DEFAULT = ["hebdate", "shabbat", "parsha", "yomtov", "holiday", "roshchodesh", "fasts"]
+
+
+def _iso_epoch(s):
+    from datetime import datetime
+    return datetime.fromisoformat(s).timestamp()
+
+
+def _fetch_shabbat(lat=SHABBAT_LAT, lon=SHABBAT_LON, tzid=SHABBAT_TZ, daf=False):
+    from datetime import date, timedelta
+    r = requests.get("https://www.hebcal.com/shabbat", params={"cfg": "json", "latitude": lat, "longitude": lon, "tzid": tzid, "M": "on"},
+                     headers={"User-Agent": UA_BOT}, timeout=15)
+    r.raise_for_status()
+    j = r.json()
+    out = Shabbat(location="143 Midwood Rd, Teaneck")
+    for it in j.get("items", []):
+        cat = it.get("category")
+        if cat == "parashat" and not out.parsha:
+            out.parsha = it.get("title", "").replace("Parashat ", "")
+        elif cat == "candles" and out.candles is None:
+            out.candles = _iso_epoch(it["date"])
+        elif cat == "havdalah" and out.havdalah is None:
+            out.havdalah = _iso_epoch(it["date"])
+        elif cat == "holiday" and not out.parsha and it.get("subcat") == "major":
+            out.parsha = it.get("title", "")
+    # the wider calendar: holidays, Rosh Chodesh, fasts, special Shabbatot, Omer, Hebrew date
+    start = date.today()
+    r = requests.get("https://www.hebcal.com/hebcal",
+                     params={"v": "1", "cfg": "json", "maj": "on", "min": "on", "mod": "on", "nx": "on",
+                             "ss": "on", "mf": "on", "s": "off", "c": "on", "o": "on", "d": "on", "M": "on",
+                             "latitude": lat, "longitude": lon, "tzid": tzid,
+                             "start": start.isoformat(), "end": (start + timedelta(days=75)).isoformat(),
+                             **({"F": "on"} if daf else {})},
+                     headers={"User-Agent": UA_BOT}, timeout=15)
+    r.raise_for_status()
+    items = r.json().get("items", [])
+    today = start.isoformat()
+
+    def base(t):
+        t = re.sub(r"^Erev\s+", "", t)
+        t = re.sub(r":\s*\d+\s+Candles?$", "", t)
+        t = re.sub(r":\s*8th Day$", "", t)
+        return re.sub(r"\s+(I|II|III|IV|V|VI|VII|VIII)$", "", t).strip()
+
+    def candles_near(d0):
+        for c in items:
+            if c.get("category") != "candles" or c.get("memo", "").startswith("Parashat"):
+                continue
+            cd = date.fromisoformat(c["date"][:10])
+            if d0 - timedelta(days=1) <= cd <= d0:
+                return _iso_epoch(c["date"])
+        return None
+
+    seen = set()
+    for it in items:
+        cat, sub, d = it.get("category"), it.get("subcat"), it.get("date", "")
+        day = d[:10]
+        if cat == "hebdate":
+            if day == today:
+                out.hebdate = it.get("title", "")
+                hy = (it.get("hdate") or "").split(" ")[-1]
+                if hy.isdigit() and hy not in out.hebdate:
+                    out.hebdate += f" {hy}"
+            continue
+        if cat == "dafyomi":
+            if day == today:
+                out.daf = it.get("title", "")
+            continue
+        if cat == "omer":
+            if day == today:
+                out.omer = it.get("title", "")
+            continue
+        kind = None
+        if cat == "roshchodesh":
+            kind = "roshchodesh"
+        elif cat == "holiday":
+            kind = {"major": "yomtov" if it.get("yomtov") else "holiday", "minor": "minor", "modern": "modern",
+                    "fast": "fasts", "shabbat": "specialshabbat"}.get(sub)
+        if not kind or day < today:
+            continue
+        name = base(it.get("title", ""))
+        if kind == "holiday" and name in ("Rosh Hashana", "Yom Kippur", "Pesach", "Shavuot", "Sukkot",
+                                          "Shmini Atzeret", "Simchat Torah"):
+            kind = "yomtov"
+        if (kind, name) in seen:
+            continue
+        seen.add((kind, name))
+        extra = ""
+        if kind in ("yomtov", "holiday"):
+            t = _iso_epoch(d) if "T" in d else candles_near(date.fromisoformat(day))
+            if t:
+                extra = f"candles {_hm(t)}"
+                if not out.holiday:
+                    out.holiday_candles = t
+            if not out.holiday:
+                out.holiday, out.holiday_date = name, day
+        elif kind == "fasts":
+            b0 = e0 = None
+            for z in items:
+                if z.get("category") == "zmanim" and z.get("subcat") == "fast" and base(z.get("memo", "")) == name:
+                    zd = date.fromisoformat(z["date"][:10])
+                    if abs((zd - date.fromisoformat(day)).days) <= 1:
+                        if z.get("title", "").startswith("Fast begins") and b0 is None:
+                            b0 = _iso_epoch(z["date"])
+                        elif z.get("title", "").startswith("Fast ends") and e0 is None:
+                            e0 = _iso_epoch(z["date"])
+            if b0 or e0:
+                extra = f"{_hm(b0) if b0 else '?'} – {_hm(e0) if e0 else '?'}"
+        out.events.append(JEvent(kind, day, name, extra))
+    out.events.sort(key=lambda e: e.date)
+    return out
+
+
+_shabbat = {False: Cached(3 * 3600), True: Cached(3 * 3600)}   # keyed by "daf yomi wanted"
+_shabbat_last = [False]
+
+
+def shabbat(cfg, force=False) -> Shabbat | None:
+    daf = "dafyomi" in (cfg.get("jcal_show") or JCAL_DEFAULT)
+    _shabbat_last[0] = daf
+
+    def fetch_shabbat():
+        return _fetch_shabbat(daf=daf)
+
+    return _shabbat[daf].get(fetch_shabbat, force)
+
+
+def shabbat_status():
+    return _shabbat[_shabbat_last[0]].status()

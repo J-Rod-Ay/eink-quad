@@ -243,7 +243,7 @@ static Resp poll(uint32_t waitS, int8_t btn, bool boot, bool abortable) {
   float vbat = sensors::readVBat();
   char path[256];
   int n = snprintf(path, sizeof(path),
-                   "%s?k=%s&v=%u&wait=%u&vbat=%.3f&rssi=%d&g=1%s",
+                   "%s?k=%s&v=%u&wait=%u&vbat=%.3f&rssi=%d&g=1&m=" QUAD_MODEL "%s",
                    NOTE_PATH, NOTE_TOKEN, rtcVersion, waitS, vbat, WiFi.RSSI(), boot ? "&boot=1" : "");
   if (haveT) n += snprintf(path + n, sizeof(path) - n, "&t=%.1f&rh=%.0f", t, rh);
   if (btn >= 0) n += snprintf(path + n, sizeof(path) - n, "&btn=%d", btn);

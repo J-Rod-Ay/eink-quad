@@ -35,6 +35,8 @@ input[type=checkbox]{width:18px;height:18px;accent-color:var(--ink)}
 .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
 @media (max-width:520px){.grid3{grid-template-columns:1fr 1fr}}
 .slots{display:grid;grid-template-columns:1fr 1fr;gap:6px;background:var(--line);padding:6px;border-radius:8px}
+.corner{background:var(--card,#fff);border-radius:6px;padding:6px;display:grid;gap:4px;align-content:start;font-size:14px}
+.chip{display:flex;align-items:center;gap:4px}.chip span{flex:1}.chip button{padding:2px 7px;font-size:13px;min-height:0}
 .checks{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:6px 12px;margin:6px 0 10px}
 .note{font-size:13px;color:var(--mute);margin:6px 0 0}
 .brief{font-style:italic;border-left:3px solid var(--ink);padding:4px 10px;margin:8px 0}
@@ -82,6 +84,12 @@ td:first-child{font-weight:600;white-space:nowrap}
     </section>
 
     <section class="card">
+      <h2>Shopping list</h2>
+      <p class="note">Shown on its own page on the board (right button). <a id="listLink" href="#">Open the phone version</a>. <a href="logout">Sign out</a></p>
+      <iframe id="listFrame" title="Shopping list" style="width:100%;height:420px;border:0;border-radius:8px;background:#fff"></iframe>
+    </section>
+
+    <section class="card">
       <h2>Preview pages</h2>
       <p class="note">Rendered from the same data the board has. Click one to put it on the panel.</p>
       <div class="thumbs" id="thumbs"></div>
@@ -98,7 +106,14 @@ td:first-child{font-weight:600;white-space:nowrap}
   <form class="stack" id="form" onsubmit="return false">
     <section class="card">
       <h2>Layout</h2>
+      <div class="grid3" style="margin-bottom:8px">
+        <label>Home screen<select name="layout" id="layoutSel"><option value="quad">2 × 2 (4 corners)</option><option value="six">3 × 2 (6 boxes)</option></select></label>
+        <label>Rotate every (min, 0 = each update)<input type="number" name="rotate_min" min="0" max="240"></label>
+        <label>Pin when candles within (h)<input type="number" name="rotate_pin_hours" min="0" max="24"></label>
+      </div>
+      <p class="note">Each box shows its first panel; add more to make it rotate (in order) on the regular update. A panel never shows twice at once.</p>
       <div class="slots" id="slots"></div>
+      <label class="inline" style="margin-top:8px"><input type="checkbox" name="rotate_pin_live"> Hold a box on a live game, a flight in the air, candle lighting soon or a severe alert</label>
       <div class="row" style="margin-top:10px">
         <label class="inline"><input type="checkbox" name="dark"> Dark mode (white on black)</label>
       </div>
@@ -113,6 +128,7 @@ td:first-child{font-weight:600;white-space:nowrap}
         <label>Quiet hours<input name="quiet" placeholder="23-6"></label>
         <label>Detail page timeout (s)<input type="number" name="page_timeout_s" min="20" max="3600"></label>
         <label>Live game refresh (min)<input type="number" name="live_min" min="1" max="30"></label>
+        <label>Live scores every (s, 20+)<input type="number" name="live_sec" min="0" max="600" title="0 = use the minutes setting"></label>
       </div>
       <label class="inline" style="margin-top:10px"><input type="checkbox" name="live_fast"> Refresh scores faster while a team is playing</label>
       <label class="inline"><input type="checkbox" name="crisp"> Crisp mode: regular updates use a full refresh (brief flash, solid blacks)</label>
@@ -124,6 +140,7 @@ td:first-child{font-weight:600;white-space:nowrap}
     <section class="card">
       <h2>Weather &amp; location</h2>
       <div class="grid2">
+        <label>Pinned message (blank = none)<input name="pinned" maxlength="300" placeholder=""></label>
         <label>Label<input name="label"></label>
         <label>City (for the brief)<input name="city"></label>
         <label>Units<select name="units"><option value="F">°F</option><option value="C">°C</option></select></label>
@@ -159,10 +176,24 @@ td:first-child{font-weight:600;white-space:nowrap}
       </div>
       <label class="inline" style="margin-top:8px"><input type="checkbox" name="show_idle"> Show teams with nothing scheduled</label>
       <label class="inline"><input type="checkbox" name="sports_logos"> Team logos</label>
+      <label class="inline"><input type="checkbox" name="scoreboard_auto"> Jump to the Scoreboard page when a game goes live (back home after)</label>
       <label class="inline"><input type="checkbox" name="odds"> Betting odds (DraftKings, via ESPN)</label>
       <div class="grid2" style="margin-top:6px"><label>Odds shown in the corner<select name="odds_style">
         <option value="spread">Point spread (TB -1.5)</option><option value="moneyline">Moneyline (TB -115)</option>
         <option value="winpct">Win chance (53% to win)</option></select></label></div>
+    </section>
+
+    <section class="card">
+      <h2>Jewish calendar</h2>
+      <p class="note">Times for 143 Midwood Rd, Teaneck (Hebcal).</p>
+      <div class="checks" id="jcal"></div>
+    </section>
+
+    <section class="card">
+      <h2>Calendar &amp; trips</h2>
+      <p class="note">Private links are stored on the server and never shown again; leave a box as is to keep the saved link, or type <b>none</b> to remove it.</p>
+      <label>Calendar feeds (private iCal / .ics links, one per line)<textarea id="calIcs" rows="3" autocomplete="off" spellcheck="false"></textarea></label>
+      <label>TripIt calendar feed (.ics)<input id="tripIcs" autocomplete="off" spellcheck="false"></label>
     </section>
 
     <section class="card">
@@ -192,11 +223,14 @@ td:first-child{font-weight:600;white-space:nowrap}
 </main>
 <script>
 const qs = new URLSearchParams(location.search);
-let K = qs.get('k'); try { if (K) localStorage.setItem('quadk', K); else K = localStorage.getItem('quadk'); } catch (e) {}
+// The server swaps ?k= for a session cookie and redirects; K only remains for old bookmarks/scripts.
+let K = qs.get('k') || ''; try { localStorage.removeItem('quadk'); } catch (e) {}
 const base = location.pathname.replace(/\/?(index\.html)?$/, '');
-const api = (p) => `${base}${p}${p.includes('?') ? '&' : '?'}k=${encodeURIComponent(K || '')}`;
+const api = (p) => K ? `${base}${p}${p.includes('?') ? '&' : '?'}k=${encodeURIComponent(K)}` : `${base}${p}`;
 let S = null, lastV = -1, dirty = false;
-const PAGE_NAMES = {quad:'Quad', weather:'Weather', news:'News', sports:'Sports', sky:'Sky'};
+const PAGE_NAMES = {quad:'Quad', weather:'Weather', news:'News', sports:'Sports', sky:'Sky', shabbat:'Jewish calendar', calendar:'Calendar', trips:'Trips', scoreboard:'Scoreboard', shopping:'Shopping'};
+const listUrl = () => `${base}/list`;
+addEventListener('DOMContentLoaded', () => { const f = document.getElementById('listFrame'); if (f) f.src = listUrl() + '?embed=1'; const a = document.getElementById('listLink'); if (a) a.href = listUrl(); });
 
 async function act(body) {
   const r = await fetch(api('/api/action'), {method:'POST', body: JSON.stringify(body)});
@@ -217,13 +251,9 @@ function fillForm(cfg) {
     if (el.type === 'checkbox') el.checked = !!v;
     else el.value = Array.isArray(v) ? v.join(', ') : v;
   }
-  const slots = document.getElementById('slots'); slots.innerHTML = '';
-  ['Top left','Top right','Bottom left','Bottom right'].forEach((lab, i) => {
-    const s = document.createElement('select'); s.dataset.slot = i; s.title = lab;
-    for (const p of S.panels) { const o = document.createElement('option'); o.value = p; o.textContent = `${lab}: ${p}`; s.appendChild(o); }
-    s.value = cfg.slots[i]; s.onchange = () => { dirty = true; };
-    slots.appendChild(s);
-  });
+  ROT = (cfg.slot_rotation && cfg.slot_rotation.length) ? cfg.slot_rotation.map(l => [...l]) : cfg.slots.map(x => [x]);
+  drawSlots();
+  document.getElementById('layoutSel').onchange = (e) => { resizeRot(e.target.value); drawSlots(); dirty = true; };
   const mk = (id, map, chosen, name) => {
     const box = document.getElementById(id); box.innerHTML = '';
     for (const [k, lab] of Object.entries(map)) {
@@ -232,8 +262,47 @@ function fillForm(cfg) {
       box.appendChild(l);
     }
   };
+  document.getElementById('calIcs').value = (cfg.calendar_ics || []).join('\n');
+  document.getElementById('tripIcs').value = cfg.tripit_ics || '';
   mk('feeds', Object.fromEntries(Object.entries(S.feeds).map(([k,v]) => [k, 'WSJ ' + v])), cfg.feeds, 'feeds');
   mk('teams', S.teams, cfg.teams, 'teams');
+  const JL = {hebdate:'Hebrew date', shabbat:'Shabbat times', parsha:'Torah reading / parsha', yomtov:'Yom Tov',
+              holiday:'Next holiday', roshchodesh:'Rosh Chodesh', fasts:'Fast days', minor:'Minor holidays',
+              modern:'Modern holidays', specialshabbat:'Special Shabbatot', omer:'Omer count', dafyomi:'Daf yomi'};
+  mk('jcal', Object.fromEntries((S.jcal_options || Object.keys(JL)).map(k => [k, JL[k] || k])), cfg.jcal_show || [], 'jcal_show');
+}
+
+let ROT = [];
+const LAYOUT_N = {quad: 4, six: 6};
+const LABELS = {4: ['Top left','Top right','Bottom left','Bottom right'],
+                6: ['Top left','Top middle','Top right','Bottom left','Bottom middle','Bottom right']};
+function resizeRot(layout) {
+  const n = LAYOUT_N[layout] || 4, used = new Set(ROT.flat());
+  ROT = ROT.slice(0, n);
+  const pool = (S.corner_panels || S.panels).filter(p => !used.has(p));
+  while (ROT.length < n) ROT.push([pool.shift() || 'weather']);
+}
+function drawSlots() {
+  const box = document.getElementById('slots'); box.innerHTML = '';
+  const n = ROT.length; box.style.gridTemplateColumns = n === 6 ? '1fr 1fr 1fr' : '1fr 1fr';
+  ROT.forEach((lst, i) => {
+    const cell = document.createElement('div'); cell.className = 'corner';
+    cell.innerHTML = `<b>${LABELS[n][i]}</b>`;
+    lst.forEach((p, j) => {
+      const chip = document.createElement('div'); chip.className = 'chip';
+      chip.innerHTML = `<span>${j + 1}. ${p}</span>`;
+      const mk = (t, fn, dis) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = t; b.disabled = dis;
+        b.onclick = () => { fn(); dirty = true; drawSlots(); }; chip.appendChild(b); };
+      mk('↑', () => { [lst[j - 1], lst[j]] = [lst[j], lst[j - 1]]; }, j === 0);
+      mk('↓', () => { [lst[j + 1], lst[j]] = [lst[j], lst[j + 1]]; }, j === lst.length - 1);
+      mk('×', () => { lst.splice(j, 1); }, lst.length === 1);
+      cell.appendChild(chip);
+    });
+    const add = document.createElement('select');
+    add.innerHTML = '<option value="">+ add panel</option>' + (S.corner_panels || S.panels).filter(p => !lst.includes(p)).map(p => `<option>${p}</option>`).join('');
+    add.onchange = () => { if (add.value) { lst.push(add.value); dirty = true; drawSlots(); } };
+    cell.appendChild(add); box.appendChild(cell);
+  });
 }
 
 function collect() {
@@ -243,8 +312,13 @@ function collect() {
     out[el.name] = el.type === 'checkbox' ? el.checked : el.value;
   }
   out.tickers = out.tickers.split(',').map(s => s.trim()).filter(Boolean);
-  out.slots = [...document.querySelectorAll('#slots select')].map(s => s.value);
-  for (const name of ['feeds', 'teams'])
+  // first panel of each box = its slot; rotation only if some box has more than one
+  out.slots = ROT.map(l => l[0]);
+  out.slot_rotation = ROT.some(l => l.length > 1) ? ROT : [];
+  out.rotate_min = +out.rotate_min || 0; out.rotate_pin_hours = +out.rotate_pin_hours || 0;
+  out.calendar_ics = document.getElementById('calIcs').value.split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
+  out.tripit_ics = document.getElementById('tripIcs').value.trim();
+  for (const name of ['feeds', 'teams', 'jcal_show'])
     out[name] = [...document.querySelectorAll(`input[data-list=${name}]:checked`)].map(e => e.value);
   return out;
 }
@@ -259,7 +333,7 @@ document.getElementById('form').addEventListener('input', () => { dirty = true; 
 
 function loadThumbs() {
   const t = document.getElementById('thumbs'); t.innerHTML = '';
-  for (const p of ['weather','news','sports','sky']) {
+  for (const p of (S && S.pages ? S.pages.filter(x => x !== 'quad') : ['weather','news','sports','sky','shabbat'])) {
     const img = new Image(); img.src = api(`/api/preview.png?page=${p}&t=${Date.now()}`); img.alt = p; img.title = 'Show ' + p + ' on the board';
     img.onclick = () => act({action:'page', page:p}); t.appendChild(img);
   }

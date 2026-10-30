@@ -10,6 +10,16 @@ Layout (800x480):
     header    y 0..38     date | sticky message | indoor + updated time
     strip     y 38..66    Claude's one-line brief (or a weather alert)
     grid      y 66..480   2x2 slots, each 400x207; any panel in any slot
+
+Device profiles (set_profile / QUAD_MODEL env):
+    e1001   800x480 panel, 4 grey levels, layouts quad | six. 1 layout unit = 1 px.
+    e1003   1872x1404 panel, 16 grey levels, layouts quad | six | nine (default).
+            Layout is done in units on a 1040x780 board and rasterised at
+            K = 1.8 px/unit: every coordinate, stroke, font size, icon and logo
+            is scaled *before* drawing (see SDraw), so glyphs are hinted and
+            rendered natively at panel resolution -- nothing is upscaled.
+            1.8 is roughly the dpi ratio (227 vs 125), so a 38-unit header is
+            the same physical height on both panels.
 """
 from __future__ import annotations
 
@@ -27,11 +37,42 @@ GRID_Y = HEAD_H + STRIP_H
 CELL_W, CELL_H = W // 2, (H - GRID_Y) // 2      # 400 x 207
 BODY = (W, H - GRID_Y)                            # detail pages: 800 x 414
 
+# ---- device profile. W/H above are layout units; PW/PH are panel pixels.
+K = 1.0                 # panel px per layout unit
+PW, PH = W, H
+GRAY_LEVELS = 4
+MODEL = "e1001"
+DEFAULT_LAYOUT = "quad"
+PROFILES = {
+    "e1001": dict(W=800, H=480, K=1.0, GRAY_LEVELS=4, DEFAULT_LAYOUT="quad"),
+    "e1003": dict(W=1040, H=780, K=1.8, GRAY_LEVELS=16, DEFAULT_LAYOUT="nine"),
+}
+
+
+def set_profile(name: str):
+    """Switch every module-level geometry constant to a device. Call once at startup."""
+    global W, H, K, PW, PH, GRAY_LEVELS, MODEL, DEFAULT_LAYOUT, CELL_W, CELL_H, BODY
+    p = PROFILES[name]
+    MODEL = name
+    W, H, K, GRAY_LEVELS, DEFAULT_LAYOUT = p["W"], p["H"], p["K"], p["GRAY_LEVELS"], p["DEFAULT_LAYOUT"]
+    PW, PH = round(W * K), round(H * K)
+    CELL_W, CELL_H = W // 2, (H - GRID_Y) // 2
+    BODY = (W, H - GRID_Y)
+    _icon_cache.clear()
+
+
+def px(v):
+    """Layout units -> panel pixels."""
+    return int(round(v * K))
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 FONT_DIR = os.path.join(HERE, "fonts")
 INK, PAPER = 0, 255
 
 _fonts = {}
+
+
+_fmeta = {}
 
 
 def F(name: str, size: int) -> ImageFont.FreeTypeFont:
@@ -44,7 +85,71 @@ def F(name: str, size: int) -> ImageFont.FreeTypeFont:
             "hand": "PatrickHand-Regular.ttf",
         }[name])
         _fonts[key] = ImageFont.truetype(path, size)
+        _fmeta[id(_fonts[key])] = key
     return _fonts[key]
+
+
+def _scaled_font(f):
+    if K == 1 or f is None or id(f) not in _fmeta:
+        return f
+    name, size = _fmeta[id(f)]
+    return F(name, max(1, round(size * K)))
+
+
+def _sc(v):
+    """Scale an xy argument of any PIL shape (flat tuple, list of pairs, nested)."""
+    if isinstance(v, (int, float)):
+        return v * K
+    return type(v)(_sc(x) for x in v) if isinstance(v, (tuple, list)) else v
+
+
+class SDraw:
+    """ImageDraw in layout units on a K-times bigger image. Coordinates, stroke
+    widths, radii and fonts are all multiplied by K before PIL sees them."""
+
+    def __init__(self, img):
+        object.__setattr__(self, "_d", ImageDraw.Draw(img))
+
+    def __getattr__(self, k):
+        return getattr(self._d, k)
+
+    def __setattr__(self, k, v):
+        setattr(self._d, k, v)
+
+    @staticmethod
+    def _kw(kw):
+        if kw.get("width"):
+            kw["width"] = max(1, round(kw["width"] * K))
+        if kw.get("radius"):
+            kw["radius"] = kw["radius"] * K
+        if "font" in kw:
+            kw["font"] = _scaled_font(kw["font"])
+        return kw
+
+    def text(self, xy, s, fill=None, font=None, anchor=None, **kw):
+        return self._d.text(_sc(xy), s, fill=fill, font=_scaled_font(font), anchor=anchor, **kw)
+
+    def textlength(self, s, font=None, **kw):
+        return self._d.textlength(s, font=_scaled_font(font), **kw) / K
+
+    def textbbox(self, xy, s, font=None, **kw):
+        b = self._d.textbbox(_sc(xy), s, font=_scaled_font(font), **kw)
+        return tuple(v / K for v in b)
+
+    def point(self, xy, fill=None):
+        x, y = xy[0] * K, xy[1] * K
+        r = max(1, round(K)) - 1
+        return self._d.rectangle((x, y, x + r, y + r), fill=fill)
+
+    def __getattribute__(self, k):
+        if k in ("line", "rectangle", "rounded_rectangle", "ellipse", "polygon", "arc", "pieslice", "chord"):
+            fn = getattr(object.__getattribute__(self, "_d"), k)
+            return lambda xy, *a, **kw: fn(_sc(xy), *a, **SDraw._kw(kw))
+        return object.__getattribute__(self, k)
+
+
+def draw(img):
+    return ImageDraw.Draw(img) if K == 1 else SDraw(img)
 
 
 # True while rendering the 4-level grey version: text is anti-aliased then,
@@ -53,8 +158,8 @@ AA = False
 
 
 def canvas(size):
-    img = Image.new("L", size, PAPER)
-    d = ImageDraw.Draw(img)
+    img = Image.new("L", (px(size[0]), px(size[1])), PAPER)
+    d = draw(img)
     d.fontmode = "L" if AA else "1"
     return img, d
 
@@ -213,6 +318,7 @@ def icon(kind: str, size: int, night=False) -> Image.Image:
 
 
 def paste_icon(c, kind, x, y, size, night=False):
+    x, y, size = px(x), px(y), px(size)
     ic = icon(kind, size, night)
     c.paste(ImageChops.darker(c.crop((x, y, x + size, y + size)), ic), (x, y))
 
@@ -224,12 +330,12 @@ def paste_logo(c, url, x, y, size, cfg=None):
     if cfg is not None and not cfg.get("sports_logos", True):
         return False
     import logos
+    x, y, size = px(x), px(y), px(size)
     img = logos.get(url, size)
     if img is None:
         return False
     if not AA:
         img = img.convert("1").convert("L")
-    x, y = int(x), int(y)
     c.paste(ImageChops.darker(c.crop((x, y, x + size, y + size)), img), (x, y))
     return True
 
@@ -237,6 +343,7 @@ def paste_logo(c, url, x, y, size, cfg=None):
 def compass_arrow(c, cx, cy, r, bearing):
     """Arrow pointing where to look (0 = north = up)."""
     S = 4
+    cx, cy, r = cx * K, cy * K, px(r)
     big = Image.new("L", (r * 2 * S, r * 2 * S), PAPER)
     d = ImageDraw.Draw(big)
     R = r * S
@@ -249,7 +356,7 @@ def compass_arrow(c, cx, cy, r, bearing):
     l, rr = pt(R * 0.36, a + math.radians(140)), pt(R * 0.36, a - math.radians(140))
     d.polygon([tip, l, tail, rr], fill=INK)
     dn = ImageDraw.Draw(big)
-    dn.text((R, S * 4), "N", font=F("b", 9 * S), fill=INK, anchor="mt")
+    dn.text((R, S * 4), "N", font=F("b", round(9 * S * K)), fill=INK, anchor="mt")
     sm = big.resize((2 * r, 2 * r), Image.LANCZOS)
     x, y = int(cx - r), int(cy - r)
     c.paste(ImageChops.darker(c.crop((x, y, x + 2 * r, y + 2 * r)), sm), (x, y))
@@ -345,6 +452,13 @@ class Ctx:
     page: str = "quad"
     notes_new: int = 0
     stale: dict = field(default_factory=dict)
+    shabbat: object = None        # sources.Shabbat
+    calendar: object = None       # list[ical.CalEvent] | None (None = no feed set)
+    trips: object = None          # list[ical.Trip] | None
+    live: object = None           # ical.Live for an airborne flight
+    shopping: list = field(default_factory=list)   # [{"text", "done"}]
+    shul: object = None           # YIOT newsletter highlights dict | None
+    rot_step: int = 0             # slot_rotation position (advances on the regular beat)
 
 
 def _deg(v):
@@ -399,6 +513,8 @@ def panel_weather(ctx: Ctx, size):
         else:
             facts.append(("Sunrise", today.sunrise.replace(" AM", "a").replace(" PM", "p")))
     fy = y0 + 2
+    if w < 300:                        # compact corner: no facts column or rain chart
+        facts = []
     for k, v in facts[:2 if wx.alerts else 3]:
         text(d, (rx, fy), k, F("cm", 16))
         text(d, (w - 12, fy), v, F("csb", 18), anchor="ra")
@@ -410,10 +526,11 @@ def panel_weather(ctx: Ctx, size):
     if wx.rain_note:
         f = F("csb", 17)
         py = cy + 30 if wx.alerts else cy + 50   # under an alert banner the pill replaces "Feels"
-        pill(d, 12, py, ellipsize(d, wx.rain_note, f, rx - 34), f, h=21)
-    _rain_bars(d, wx.hourly, ctx.now, rx, w - 12, fy + 4, top - 7)
+        pill(d, 12, py, ellipsize(d, wx.rain_note, f, (rx if w >= 300 else w) - 34), f, h=21)
+    if w >= 300:
+        _rain_bars(d, wx.hourly, ctx.now, rx, w - 12, fy + 4, top - 7)
     # 3-day row
-    days = wx.days[1:4]
+    days = wx.days[1:4 if w >= 300 else 3]
     if days:
         d.line((10, top - 4, w - 10, top - 4), fill=INK, width=1)
         cw = (w - 20) / len(days)
@@ -495,7 +612,7 @@ def panel_news(ctx: Ctx, size):
     c, d = canvas(size)
     w, h = size
     y = 6
-    qs = ctx.quotes[:6]
+    qs = ctx.quotes[:6 if w >= 300 else 3]
     if qs:
         cw = w / len(qs)
         for i, q in enumerate(qs):
@@ -793,7 +910,585 @@ def _event_card(c, d, ctx, size):
     return c
 
 
-PANELS = {"weather": panel_weather, "news": panel_news, "sports": panel_sports, "sky": panel_sky}
+def _sday(ts):
+    t = time.localtime(ts)
+    return f"{time.strftime('%a %b', t)} {t.tm_mday}"
+
+
+JCAL_DEFAULT = ["hebdate", "shabbat", "parsha", "yomtov", "holiday", "roshchodesh", "fasts"]
+
+
+def _jshow(ctx):
+    v = ctx.cfg.get("jcal_show")
+    return set(JCAL_DEFAULT if v is None else v)
+
+
+def _jevents(ctx):
+    show = _jshow(ctx)
+    return [e for e in (getattr(ctx.shabbat, "events", None) or []) if e.kind in show]
+
+
+def _jday(ds):
+    t = time.strptime(ds, "%Y-%m-%d")
+    return f"{time.strftime('%a %b', t)} {t.tm_mday}"
+
+
+def _jrow(d, x, y, w, e, f, fb, dw=92):
+    text(d, (x, y), _jday(e.date), fb)
+    ex = e.extra
+    exw = tw(d, ex, f) if ex else 0
+    text(d, (x + dw, y), ellipsize(d, e.title, f, w - x - dw - exw - 18), f)
+    if ex:
+        text(d, (w - 12, y), ex, f, anchor="ra")
+
+
+def panel_shabbat(ctx: Ctx, size):
+    """Jewish calendar: Shabbat times up top, then whatever else jcal_show enables, as space allows."""
+    c, d = canvas(size)
+    w, h = size
+    sh = ctx.shabbat
+    show = _jshow(ctx)
+    title = "SHABBAT" if "shabbat" in show else "JEWISH CALENDAR"
+    text(d, (12, 6), title, F("cb", 22))
+    if sh is None:
+        text(d, (12, 50), "Times unavailable", F("sb", 20))
+        text(d, (12, 78), "waiting for Hebcal", F("cm", 16))
+        return c
+    hx = 12 + tw(d, title, F("cb", 22)) + 14
+    if "parsha" in show and sh.parsha:
+        text(d, (w - 12, 8), ellipsize(d, sh.parsha, F("sb", 20), w - 12 - hx), F("sb", 20), anchor="ra")
+    y = 34
+    sub = [x for x in ((sh.hebdate if "hebdate" in show else ""), (sh.omer if "omer" in show else ""),
+                       (f"Daf {sh.daf}" if "dafyomi" in show and sh.daf else "")) if x]
+    if sub:
+        text(d, (12, y + 1), ellipsize(d, " · ".join(sub), F("cm", 16), w - 24), F("cm", 16))
+        y += 21
+    d.line((10, y + 1, w - 10, y + 1), fill=INK, width=2)
+    y += 6
+    if "shabbat" in show:
+        tf = F("b", 30 if sub else 34)
+        rh = 44 if sub else 50
+        for label, ts in (("Candle lighting", sh.candles), ("Havdalah", sh.havdalah)):
+            text(d, (12, y + 1), label, F("csb", 17))
+            text(d, (12, y + 21), _sday(ts) if ts else "—", F("m", 16))
+            if ts:
+                text(d, (w - 12, y + 2), hm(ts), tf, anchor="ra")
+            y += rh
+        d.line((10, y - 1, w - 10, y - 1), fill=INK, width=1)
+        y += 3
+    evs = _jevents(ctx)
+    f, fb = F("cm", 16), F("csb", 16)
+    rows = max(0, (h - 4 - y) // 21)
+    if not evs and rows:
+        text(d, (12, y), "Nothing else in the next few weeks", f)
+    for e in evs[:rows]:
+        _jrow(d, 12, y, w, e, f, fb)
+        y += 21
+    return c
+
+
+# ================================================================== calendar (iCal)
+
+def _day_label(ds, now):
+    t0 = time.strftime("%Y-%m-%d", time.localtime(now))
+    t1 = time.strftime("%Y-%m-%d", time.localtime(now + 86400))
+    if ds == t0:
+        return "TODAY"
+    if ds == t1:
+        return "TOMORROW"
+    t = time.strptime(ds, "%Y-%m-%d")
+    return f"{time.strftime('%A', t).upper()} {time.strftime('%b', t).upper()} {t.tm_mday}"
+
+
+def _calm(d, w, y, line1, line2):
+    for ln in wrap(d, line1, F("sb", 19), w - 24, 2):
+        text(d, (12, y), ln, F("sb", 19))
+        y += 23
+    y -= 23
+    text(d, (12, y + 26), ellipsize(d, line2, F("cm", 16), w - 24), F("cm", 16))
+
+
+def _cal_rows(d, ctx, x, y, w, bottom, f=None, fb=None):
+    """Day headings + 'time  title' rows until the space runs out. Returns y."""
+    f, fb = f or F("m", 17), fb or F("cb", 15)
+    evs = [e for e in ctx.calendar if e.end > ctx.now or e.all_day and e.day >= time.strftime("%Y-%m-%d", time.localtime(ctx.now))]
+    last = None
+    tcol = tw(d, "12:00 PM", F("csb", 16)) + 10
+    for e in evs:
+        need = 21 + (20 if e.day != last else 0)
+        if y + need > bottom:
+            break
+        if e.day != last:
+            text(d, (x, y + 2), _day_label(e.day, ctx.now), fb)
+            y += 20
+            last = e.day
+        tm = "all day" if e.all_day else hm(e.start)
+        text(d, (x, y), tm, F("csb", 16))
+        text(d, (x + tcol, y - 1), ellipsize(d, e.title, f, w - x - tcol - 6), f)
+        y += 21
+    if not evs:
+        text(d, (x, y), "Nothing on the calendar", f)
+    return y
+
+
+def panel_calendar(ctx: Ctx, size):
+    c, d = canvas(size)
+    w, h = size
+    text(d, (12, 6), "CALENDAR", F("cb", 22))
+    t = time.localtime(ctx.now)
+    text(d, (w - 12, 8), f"{time.strftime('%a %b', t)} {t.tm_mday}", F("sb", 20), anchor="ra")
+    d.line((10, 36, w - 10, 36), fill=INK, width=2)
+    if ctx.calendar is None:
+        _calm(d, w, 54, "Add your calendar link in settings", "Paste a private iCal (.ics) URL")
+        return c
+    _cal_rows(d, ctx, 12, 42, w - 6, h - 2)
+    return c
+
+
+def detail_calendar(ctx, size):
+    c, d = canvas(size)
+    w, h = size
+    if ctx.calendar is None:
+        _calm(d, w, 40, "Add your calendar link in settings", "Dashboard – Calendar feeds: paste a private iCal (.ics) URL")
+        return c
+    days = sorted({e.day for e in ctx.calendar})
+    cols = [days[:2], days[2:5]]
+    for i, ds in enumerate(cols):
+        x = 14 + i * (w // 2)
+        sub = Ctx(**{**ctx.__dict__, "calendar": [e for e in ctx.calendar if e.day in ds]})
+        _cal_rows(d, sub, x, 8, x + w // 2 - 20, h - 4, F("m", 18), F("cb", 17))
+        if i:
+            d.line((x - 10, 8, x - 10, h - 8), fill=INK, width=1)
+    return c
+
+
+# ================================================================== trips (TripIt iCal)
+
+def _dspan(a, b):
+    ta, tb = time.localtime(a), time.localtime(b - 1)
+    if ta.tm_mon == tb.tm_mon:
+        return f"{time.strftime('%b', ta)} {ta.tm_mday}–{tb.tm_mday}"
+    return f"{time.strftime('%b', ta)} {ta.tm_mday} – {time.strftime('%b', tb)} {tb.tm_mday}"
+
+
+def _next_seg(trip, kind, now):
+    return next((s for s in trip.segments if s.kind == kind and s.end > now), None)
+
+
+def _map_dot(d, box, lv):
+    """Tiny route map: origin, destination, the plane as a filled dot."""
+    x0, y0, x1, y1 = box
+    d.rectangle(box, outline=INK, width=1)
+    if lv.olat is None:
+        pts = [(lv.lat, lv.lon)]
+    else:
+        pts = [(lv.olat, lv.olon), (lv.dlat, lv.dlon), (lv.lat, lv.lon)]
+    la = [p[0] for p in pts]; lo = [p[1] for p in pts]
+    span = max(max(la) - min(la), max(lo) - min(lo), 1.0) * 1.25
+    cla, clo = (max(la) + min(la)) / 2, (max(lo) + min(lo)) / 2
+    sc = min(x1 - x0, y1 - y0) / span
+
+    def xy(lat, lon):
+        return ((x0 + x1) / 2 + (lon - clo) * sc, (y0 + y1) / 2 - (lat - cla) * sc)
+    if lv.olat is not None:
+        a, b = xy(lv.olat, lv.olon), xy(lv.dlat, lv.dlon)
+        for i in range(0, 20, 2):     # dashed great-circle-ish line
+            p = (a[0] + (b[0] - a[0]) * i / 20, a[1] + (b[1] - a[1]) * i / 20)
+            q = (a[0] + (b[0] - a[0]) * (i + 1) / 20, a[1] + (b[1] - a[1]) * (i + 1) / 20)
+            d.line((p, q), fill=INK, width=1)
+        for (px, py), lab in ((a, lv.origin), (b, lv.dest)):
+            d.rectangle((px - 2, py - 2, px + 2, py + 2), fill=INK)
+            text(d, (px, py + 4), lab, F("cb", 12), anchor="ma")
+    px, py = xy(lv.lat, lv.lon)
+    d.ellipse((px - 5, py - 5, px + 5, py + 5), fill=INK)
+
+
+def _live_block(c, d, ctx, seg, x, y, w, h, big=False):
+    lv = ctx.live
+    pill(d, x, y, "IN THE AIR", F("csb", 15), h=20)
+    fx = x + tw(d, "IN THE AIR", F("csb", 15)) + 20
+    text(d, (fx, y + 1), f"{seg.flight_no}", F("cb", 18))
+    route = f"{seg.origin} – {seg.dest}"
+    for sz in ((30, 26, 22) if big else (26, 22, 18)):
+        f = F("b", sz)
+        if fx + tw(d, seg.flight_no, F("cb", 18)) + 12 + tw(d, route, f) <= w - 12:
+            break
+    text(d, (w - 12, y - 4 + (26 - sz) // 2), route, f, anchor="ra")
+    y += 30
+    if lv is None:
+        text(d, (x, y), "Live position not found yet", F("cm", 16))
+        return y + 22
+    alt = f"{lv.alt_ft:,} ft" if lv.alt_ft else "—"
+    spd = f"{lv.speed_kt:.0f} kt" if lv.speed_kt else "—"
+    text(d, (x, y), f"{alt} · {spd}", F("sb", 18))
+    y += 22
+    where = lv.place or f"{lv.lat:.2f}, {lv.lon:.2f}"
+    text(d, (x, y), ellipsize(d, f"over {where}", F("cm", 16), w - x - 12), F("cm", 16))
+    y += 22
+    if lv.progress is not None:
+        d.rounded_rectangle((x, y + 2, w - 12, y + 10), radius=4, outline=INK, width=2)
+        px = x + (w - 12 - x) * lv.progress
+        d.rounded_rectangle((x, y + 2, max(x + 8, px), y + 10), radius=4, fill=INK)
+        text(d, (w - 12, y + 13), f"{lv.progress * 100:.0f}% · lands {hm(seg.end)}", F("cm", 15), anchor="ra")
+        y += 32
+    return y
+
+
+def _seg_line(s):
+    if s.kind == "flight":
+        who = f"{s.airline} {s.flight_no}".strip() if s.airline else s.flight_no
+        return f"{who} · {s.origin}–{s.dest}", f"{_sday(s.start)} {hm(s.start)}"
+    if s.kind == "cruise":
+        ports = " – ".join(x for x in (s.embark, s.disembark) if x)
+        name = s.name + (f" · {s.ship}" if s.ship and s.ship not in s.name else "")
+        return f"Cruise: {name}" + (f" · {ports}" if ports else ""), _dspan(s.start, s.end)
+    if s.kind == "hotel":
+        return f"Hotel: {s.name or s.title}", _dspan(s.start, s.end)
+    return s.title, _sday(s.start)
+
+
+def panel_trips(ctx: Ctx, size):
+    c, d = canvas(size)
+    w, h = size
+    text(d, (12, 6), "NEXT TRIP", F("cb", 22))
+    if ctx.trips is None:
+        d.line((10, 36, w - 10, 36), fill=INK, width=2)
+        _calm(d, w, 54, "Add your TripIt calendar link in settings", "TripIt – Settings – Calendar feeds (.ics)")
+        return c
+    if not ctx.trips:
+        d.line((10, 36, w - 10, 36), fill=INK, width=2)
+        _calm(d, w, 54, "No upcoming trips", "Trips added to TripIt show up here")
+        return c
+    tr = ctx.trips[0]
+    text(d, (w - 12, 8), _dspan(tr.start, tr.end), F("sb", 20), anchor="ra")
+    text(d, (12, 36), ellipsize(d, tr.name, F("sb", 20), w - 24), F("sb", 20))
+    d.line((10, 62, w - 10, 62), fill=INK, width=2)
+    y = 68
+    air = next((s for s in tr.segments if s.kind == "flight" and s.start - 900 <= ctx.now <= s.end + 1800), None)
+    if air is not None:
+        y = _live_block(c, d, ctx, air, 12, y, w, h)
+    else:
+        fl = _next_seg(tr, "flight", ctx.now)
+        if fl:
+            text(d, (12, y), ellipsize(d, f"{fl.airline} {fl.flight_no}".strip(), F("csb", 18), w - 150), F("csb", 18))
+            text(d, (w - 12, y - 3), f"{fl.origin} – {fl.dest}", F("b", 26), anchor="ra")
+            text(d, (12, y + 24), f"{_sday(fl.start)} · departs {hm(fl.start)}", F("m", 17))
+            y += 50
+    for kind in ("cruise", "hotel"):
+        s = _next_seg(tr, kind, ctx.now)
+        if s and y + 21 <= h - 2:
+            a, b = _seg_line(s)
+            text(d, (12, y), ellipsize(d, a, F("cm", 16), w - 30 - tw(d, b, F("cm", 16))), F("cm", 16))
+            text(d, (w - 12, y), b, F("cm", 16), anchor="ra")
+            y += 21
+    return c
+
+
+def detail_trips(ctx, size):
+    c, d = canvas(size)
+    w, h = size
+    if not ctx.trips:
+        return panel_trips(ctx, size)
+    tr = ctx.trips[0]
+    air = next((s for s in tr.segments if s.kind == "flight" and s.start - 900 <= ctx.now <= s.end + 1800), None)
+    lw = 470 if air else w
+    text(d, (14, 6), ellipsize(d, tr.name, F("cb", 24), lw - 30), F("cb", 24))
+    text(d, (14, 36), _dspan(tr.start, tr.end), F("m", 18))
+    d.line((10, 62, lw - 10, 62), fill=INK, width=2)
+    y = 70
+    for s in tr.segments:
+        if y > h - 26:
+            break
+        a, b = _seg_line(s)
+        text(d, (14, y), b, F("csb", 17))
+        text(d, (150, y - 1), ellipsize(d, a, F("m", 18), lw - 164), F("m", 18))
+        y += 26
+    if len(ctx.trips) > 1 and y < h - 26:
+        nt = ctx.trips[1]
+        text(d, (14, h - 24), ellipsize(d, f"Then: {nt.name} · {_dspan(nt.start, nt.end)}", F("cm", 16), lw - 28), F("cm", 16))
+    if air:
+        d.line((lw, 8, lw, h - 8), fill=INK, width=1)
+        y2 = _live_block(c, d, ctx, air, lw + 12, 8, w, h, big=True)
+        if ctx.live:
+            _map_dot(d, (lw + 12, y2 + 2, w - 12, h - 10), ctx.live)
+    return c
+
+
+# ================================================================== scoreboard (page only)
+
+def _sit_line(g):
+    st = g.situation or {}
+    bits = []
+    if st.get("downDistanceText") or st.get("shortDownDistanceText"):
+        bits.append(st.get("downDistanceText") or st.get("shortDownDistanceText"))
+        if st.get("isRedZone"):
+            bits.append("red zone")
+    if "outs" in st:
+        o = int(st.get("outs") or 0)
+        bits.append(f"{o} out" + ("s" if o != 1 else ""))
+        if "balls" in st:
+            bits.append(f"{st.get('balls', 0)}-{st.get('strikes', 0)}")
+    return " · ".join(str(b) for b in bits)
+
+
+def _diamond(d, cx, cy, r, st):
+    """Three bases as diamonds, filled when occupied."""
+    for (dx, dy), k in (((r, 0), "onFirst"), ((0, -r), "onSecond"), ((-r, 0), "onThird")):
+        x, y, q = cx + dx, cy + dy, r * 0.55
+        poly = [(x, y - q), (x + q, y), (x, y + q), (x - q, y)]
+        d.polygon(poly, fill=INK if st.get(k) else None, outline=INK, width=2)
+
+
+def _team_side(c, d, ctx, x, y, size, logo, abbr, name, score, align):
+    if not paste_logo(c, logo, x, y, size, ctx.cfg):
+        d.rectangle((x, y, x + size, y + size), outline=INK, width=2)
+        text(d, (x + size / 2, y + size / 2), abbr, F("cb", 20), anchor="mm")
+    text(d, (x + size / 2, y + size + 4), ellipsize(d, name, F("csb", 17), size + 60), F("csb", 17), anchor="ma")
+
+
+def _score_block(c, d, ctx, row, g, box, big=True):
+    x0, y0, x1, y1 = box
+    w = x1 - x0
+    ls = 84 if big else 56
+    us_name, them_name = row.label, g.opp_name
+    left = (g.our_logo or row.logo, g.abbr, us_name, g.us)
+    right = (g.opp_logo, g.opp, them_name, g.them)
+    if g.home:   # away team on the left, like a stadium board
+        left, right = right, left
+    ty = y0 + 8
+    _team_side(c, d, ctx, x0 + 30, ty, ls, *left, "l")
+    _team_side(c, d, ctx, x1 - 30 - ls, ty, ls, *right, "r")
+    sf = F("b", 76 if big else 50)
+    sc = f"{'' if left[3] is None else left[3]}  –  {'' if right[3] is None else right[3]}"
+    cx = (x0 + x1) / 2
+    text(d, (cx, ty - 6), sc, sf, anchor="ma")
+    sy = ty + (86 if big else 58)
+    state = g.detail or ("Final" if g.state == "post" else "")
+    text(d, (cx, sy), state, F("cb", 24 if big else 19), anchor="ma")
+    sy += 30 if big else 24
+    sit = _sit_line(g) if g.state == "in" else ""
+    if sit:
+        text(d, (cx, sy), ellipsize(d, sit, F("sb", 20), w - 2 * (ls + 60)), F("sb", 20), anchor="ma")
+        sy += 26
+    if g.state == "in" and any(k in (g.situation or {}) for k in ("onFirst", "onSecond", "onThird")):
+        _diamond(d, cx, sy + 22, 13, g.situation)
+        sy += 42
+    foot = " · ".join(x for x in (g.tv, g.note) if x)
+    if foot:
+        text(d, (cx, y1 - 22), ellipsize(d, foot, F("cm", 16), w - 40), F("cm", 16), anchor="ma")
+    lp = (g.situation or {}).get("lastPlay") if big and g.state == "in" else ""
+    if lp and sy < y1 - 48:
+        for i, ln in enumerate(wrap(d, lp, F("m", 16), w - 60, 2)):
+            text(d, (cx, sy + 2 + i * 19), ln, F("m", 16), anchor="ma")
+
+
+def panel_scoreboard(ctx: Ctx, size):
+    """Corner version: the live game (or last final) as a two-line board, then what's next."""
+    c, d = canvas(size)
+    w, h = size
+    live = [r for r in ctx.teams if r.live]
+    if live:
+        r = live[ctx.cycle % len(live)]
+        g = r.live
+        pill(d, 10, 7, "LIVE", F("csb", 15), h=20)
+        hd = g.detail
+    else:
+        finals = [r for r in ctx.teams if r.last]
+        if not finals:
+            text(d, (12, 6), "SCOREBOARD", F("cb", 22))
+            d.line((10, 36, w - 10, 36), fill=INK, width=2)
+            nx = sorted((r for r in ctx.teams if r.next), key=lambda r: r.next.start)
+            if not nx:
+                text(d, (12, 50), "No games coming up", F("sb", 19))
+                return c
+            r = nx[0]
+            text(d, (12, 46), ellipsize(d, f"{r.label} {'vs' if r.next.home else 'at'} {r.next.opp_name}", F("sb", 20), w - 24), F("sb", 20))
+            text(d, (12, 72), when(r.next.start, r.next.time_tbd), F("m", 17))
+            if r.next.tv:
+                text(d, (12, 94), r.next.tv, F("cm", 16))
+            return c
+        r = max(finals, key=lambda r: r.last.start)
+        g = r.last
+        text(d, (12, 6), "FINAL", F("cb", 22))
+        hd = _sday(g.start)
+    text(d, (w - 12, 8), ellipsize(d, hd, F("csb", 18), w - 90), F("csb", 18), anchor="ra")
+    d.line((10, 34, w - 10, 34), fill=INK, width=2)
+    us = (g.our_logo or r.logo, r.label, g.us)
+    them = (g.opp_logo, g.opp_name, g.them)
+    rows = [them, us] if g.home else [us, them]
+    sf = F("b", 40 if w >= 300 else 34)
+    y = 42
+    for logo, name, sc in rows:
+        if not paste_logo(c, logo, 12, y, 38, ctx.cfg):
+            d.rectangle((12, y, 50, y + 38), outline=INK, width=2)
+        scs = "" if sc is None else str(sc)
+        sw = tw(d, scs, sf)
+        text(d, (60, y + 8), ellipsize(d, name, F("sb", 20), w - 60 - sw - 22), F("sb", 20))
+        text(d, (w - 12, y - 4), scs, sf, anchor="ra")
+        y += 46
+    sit = _sit_line(g) if g.state == "in" else ""
+    foot = " · ".join(x for x in (sit, g.tv) if x)
+    if foot:
+        text(d, (12, y + 2), ellipsize(d, foot, F("cm", 16), w - 24), F("cm", 16))
+        y += 22
+    if not live:
+        nx = sorted((t for t in ctx.teams if t.next), key=lambda t: t.next.start)
+        if nx and y + 20 <= h:
+            n = nx[0]
+            text(d, (12, y + 2), ellipsize(d, f"Next: {n.label} {'vs' if n.next.home else 'at'} {n.next.opp} · {when(n.next.start, n.next.time_tbd)}", F("cm", 16), w - 24), F("cm", 16))
+    return c
+
+
+def detail_scoreboard(ctx, size):
+    c, d = canvas(size)
+    w, h = size
+    live = [r for r in ctx.teams if r.live]
+    if live:
+        n = len(live)
+        if n == 1:
+            _score_block(c, d, ctx, live[0], live[0].live, (0, 0, w, h))
+        else:
+            k = (ctx.cycle * 2) % n if n > 2 else 0     # >2 live: show two at a time, rotating each update
+            pair = [live[k % n], live[(k + 1) % n]]
+            for i, r in enumerate(pair):
+                _score_block(c, d, ctx, r, r.live, (0, i * h // 2, w, (i + 1) * h // 2), big=False)
+            d.line((10, h // 2, w - 10, h // 2), fill=INK, width=2)
+            if n > 2:
+                text(d, (w - 12, 4), f"{n} live · rotating", F("cm", 15), anchor="ra")
+        return c
+    finals = [r for r in ctx.teams if r.last]
+    nexts = [r for r in ctx.teams if r.next]
+    if not finals and not nexts:
+        text(d, (w / 2, h / 2), "No games scheduled for your teams", F("sb", 24), anchor="mm")
+        return c
+    if finals:
+        r = max(finals, key=lambda r: r.last.start)
+        text(d, (14, 6), f"LAST FINAL · {_sday(r.last.start).upper()}", F("cb", 18))
+        _score_block(c, d, ctx, r, r.last, (0, 26, w, 26 + 200), big=False)
+    y = 236 if finals else 10
+    d.line((10, y - 6, w - 10, y - 6), fill=INK, width=2)
+    text(d, (14, y), "NEXT UP", F("cb", 18))
+    y += 28
+    for r in sorted(nexts, key=lambda r: r.next.start)[: (h - y) // 44]:
+        g = r.next
+        vs = "vs" if g.home else "at"
+        paste_logo(c, g.opp_logo, 14, y, 36, ctx.cfg)
+        text(d, (60, y), ellipsize(d, f"{r.label} {vs} {g.opp_name}", F("sb", 21), 380), F("sb", 21))
+        text(d, (60, y + 22), when(g.start, g.time_tbd), F("cm", 16))
+        if g.tv:
+            text(d, (w - 14, y + 4), g.tv, F("csb", 19), anchor="ra")
+        y += 44
+    return c
+
+
+# ================================================================== shopping list (page only)
+
+def _box(d, x, y, s, checked):
+    d.rectangle((x, y, x + s, y + s), outline=INK, width=2)
+    if checked:
+        d.line((x + 3, y + s / 2, x + s / 2 - 1, y + s - 4), fill=INK, width=3)
+        d.line((x + s / 2 - 1, y + s - 4, x + s - 3, y + 3), fill=INK, width=3)
+
+
+def detail_shopping(ctx, size):
+    c, d = canvas(size)
+    w, h = size
+    items = ctx.shopping or []
+    todo = [i for i in items if not i.get("done")]
+    done = [i for i in items if i.get("done")]
+    text(d, (14, 6), f"{len(todo)} to get" + (f" · {len(done)} in the cart" if done else ""), F("csb", 18))
+    if not items:
+        text(d, (14, 60), "The list is empty", F("sb", 26))
+        text(d, (14, 98), "Add items from the dashboard or with Siri", F("cm", 17))
+        return c
+    rows = [(i, False) for i in todo] + [(i, True) for i in done]
+    big = len(rows) <= 8
+    rh = 40 if big else 30
+    per_col = max(1, (h - 40) // rh)
+    ncol = 1 if len(rows) <= per_col else 2
+    cw = (w - 20) // ncol
+    f_todo, f_done = F("sb", 28 if big else 21), F("m", 19 if big else 17)
+    shown = 0
+    for k, (it, ck) in enumerate(rows[: per_col * ncol]):
+        col, row = divmod(k, per_col)
+        x, y = 14 + col * cw, 36 + row * rh
+        bs = 22 if big else 17
+        _box(d, x, y + (rh - bs) // 2 - 3, bs, ck)
+        f = f_done if ck else f_todo
+        s = ellipsize(d, it.get("text", ""), f, cw - bs - 24)
+        tx = x + bs + 10
+        ty = y + (rh - bs) // 2 - 3 + bs / 2
+        text(d, (tx, ty), s, f, anchor="lm")
+        if ck:
+            d.line((tx, ty, tx + tw(d, s, f), ty), fill=INK, width=2)
+        shown += 1
+    if ncol == 2:
+        d.line((14 + cw - 8, 40, 14 + cw - 8, h - 6), fill=INK, width=1)
+    if shown < len(rows):
+        text(d, (w - 14, 8), f"+{len(rows) - shown} more", F("cm", 16), anchor="ra")
+    return c
+
+
+def panel_shopping(ctx: Ctx, size):
+    """Corner summary of the shopping list: what is still to get, checked items hidden."""
+    c, d = canvas(size)
+    w, h = size
+    items = ctx.shopping or []
+    todo = [i for i in items if not i.get("done")]
+    text(d, (12, 6), "SHOPPING", F("cb", 22))
+    text(d, (w - 12, 8), f"{len(todo)} to get" if todo else "", F("sb", 20), anchor="ra")
+    d.line((10, 36, w - 10, 36), fill=INK, width=2)
+    if not todo:
+        _calm(d, w, 54, "Nothing on the list", "Add items from the dashboard or with Siri")
+        return c
+    rh, bs = 27, 15
+    per_col = max(1, (h - 46) // rh)
+    ncol = 1 if len(todo) <= per_col or w < 300 else 2
+    cw = (w - 20) // ncol
+    f = F("m", 19)
+    cap = per_col * ncol
+    show = todo[:cap - 1] if len(todo) > cap else todo
+    for k, it in enumerate(show):
+        col, row = divmod(k, per_col)
+        x, y = 12 + col * cw, 44 + row * rh
+        _box(d, x, y + (rh - bs) // 2 - 2, bs, False)
+        text(d, (x + bs + 8, y + rh / 2 - 2), ellipsize(d, it.get("text", ""), f, cw - bs - 18), f, anchor="lm")
+    if len(show) < len(todo):
+        col, row = divmod(len(show), per_col)
+        text(d, (12 + col * cw, 44 + row * rh + rh / 2 - 2), f"+{len(todo) - len(show)} more", F("cm", 17), anchor="lm")
+    return c
+
+
+def panel_newsletter(ctx: Ctx, size):
+    """Young Israel of Teaneck weekly newsletter highlights (corner)."""
+    w, h = size
+    c, d = canvas(size)
+    text(d, (12, 8), "NEWSLETTER", F("cb", 18))
+    shul = getattr(ctx, "shul", None) or {}
+    items = shul.get("highlights") or shul.get("items") or []
+    if not items:
+        items = [
+            ("This week", "YIOT newsletter loads Thursday evenings"),
+            ("Shabbat", "See the Shabbat column for candle lighting"),
+            ("Community", "Highlights from Young Israel of Teaneck"),
+        ]
+    y = 36
+    for title, body in items[:6]:
+        if y + 36 > h - 8:
+            break
+        text(d, (12, y), ellipsize(d, str(title), F("sb", 16), w - 24), F("sb", 16))
+        y += 20
+        text(d, (12, y), ellipsize(d, str(body), F("m", 15), w - 24), F("m", 15))
+        y += 22
+    return c
+
+
+
+PANELS = {"weather": panel_weather, "news": panel_news, "sports": panel_sports, "sky": panel_sky,
+          "shabbat": panel_shabbat, "calendar": panel_calendar, "trips": panel_trips,
+          "scoreboard": panel_scoreboard, "shopping": panel_shopping,
+          "newsletter": panel_newsletter}
+CORNER_PANELS = list(PANELS)          # shopping last, so short slot lists never pick it by default
 
 
 # ================================================================== chrome
@@ -839,9 +1534,18 @@ def header(ctx: Ctx):
 
 
 def strip(ctx: Ctx):
-    """The one line under the header: sticky message > severe alert > brief."""
+    """The one line under the header: sticky message > severe alert > pinned > brief."""
     c, d = canvas((W, STRIP_H))
     msg, bold = "", False
+    pinned = " ".join(str(ctx.cfg.get("pinned") or "").split())
+    if pinned and not ctx.sticky and not (ctx.weather is not None and ctx.weather.alerts
+                                          and ctx.weather.alerts[0][2] in ("Extreme", "Severe")):
+        f = F("csb", 15)
+        lw = tw(d, "PINNED", f)
+        pill(d, 10, 4, "PINNED", f, pad=5, h=STRIP_H - 9)
+        text(d, (lw + 30, STRIP_H / 2 - 1), ellipsize(d, pinned, F("sb", 18), W - lw - 44), F("sb", 18), anchor="lm")
+        d.line((0, STRIP_H - 1, W, STRIP_H - 1), fill=INK, width=2)
+        return c
     if ctx.sticky:
         msg, bold = ctx.sticky, True
     elif ctx.weather is not None and ctx.weather.alerts and ctx.weather.alerts[0][2] in ("Extreme", "Severe"):
@@ -874,25 +1578,120 @@ def _next_up(ctx):
     return ""
 
 
-def slot_boxes():
+LAYOUTS = {"quad": 4, "six": 6, "nine": 9, "thirds": 7}
+GRID_DIMS = {"quad": (2, 2), "six": (3, 2), "nine": (3, 3)}
+
+
+def layout_of(cfg) -> str:
+    lay = cfg.get("layout") or DEFAULT_LAYOUT
+    return lay if lay in LAYOUTS else DEFAULT_LAYOUT
+
+
+def slot_boxes(layout="quad"):
+    """Slot rectangles in layout units."""
+    if layout == "thirds":
+        # Left 1/3: Shabbat (tall) + newsletter. Middle: weather / trips / calendar.
+        # Right: sports (tall) + scoreboard — two panels; room for a third later.
+        xs = [0, W // 3, 2 * W // 3, W]
+        ch = (H - GRID_Y) // 3
+        ys = [GRID_Y, GRID_Y + ch, GRID_Y + 2 * ch, H]
+        return [
+            (xs[0], ys[0], xs[1], ys[2]),  # shabbat tall
+            (xs[0], ys[2], xs[1], ys[3]),  # newsletter
+            (xs[1], ys[0], xs[2], ys[1]),  # weather
+            (xs[1], ys[1], xs[2], ys[2]),  # trips
+            (xs[1], ys[2], xs[2], ys[3]),  # calendar
+            (xs[2], ys[0], xs[3], ys[2]),  # sports tall
+            (xs[2], ys[2], xs[3], ys[3]),  # scoreboard
+        ]
+    if layout == "nine":
+        xs = [0, W // 3, 2 * W // 3, W]
+        ch = (H - GRID_Y) // 3
+        ys = [GRID_Y, GRID_Y + ch, GRID_Y + 2 * ch, H]
+        return [(xs[c], ys[r], xs[c + 1], ys[r + 1]) for r in range(3) for c in range(3)]
+    if layout == "six":
+        xs = [0, W // 3, 2 * W // 3, W]
+        return [(xs[c], GRID_Y + r * CELL_H, xs[c + 1], GRID_Y + (r + 1) * CELL_H) for r in range(2) for c in range(3)]
     return [(0, GRID_Y, CELL_W, GRID_Y + CELL_H), (CELL_W, GRID_Y, W, GRID_Y + CELL_H),
             (0, GRID_Y + CELL_H, CELL_W, H), (CELL_W, GRID_Y + CELL_H, W, H)]
 
 
+def _urgent(name, ctx):
+    """A state worth holding a rotating corner on."""
+    if name in ("sports", "scoreboard"):
+        return any(r.live for r in ctx.teams)
+    if name == "trips":
+        tr = ctx.trips or []
+        return any(s.kind == "flight" and s.start - 900 <= ctx.now <= s.end + 1800 for t in tr for s in t.segments)
+    if name == "shabbat":
+        sh = ctx.shabbat
+        hrs = float(ctx.cfg.get("rotate_pin_hours", 3)) * 3600
+        ts = [t for t in (getattr(sh, "candles", None), getattr(sh, "holiday_candles", None)) if t]
+        return any(-1800 <= t - ctx.now <= hrs for t in ts)
+    if name == "weather":
+        wx = ctx.weather
+        return bool(wx is not None and wx.alerts and wx.alerts[0][2] in ("Extreme", "Severe"))
+    if name == "sky":
+        return ctx.event is not None
+    return False
+
+
+def resolve_slots(ctx) -> list[str]:
+    """Which panel each corner shows now: fixed slots, or slot_rotation cycling on rot_step,
+    with live/urgent panels pinned and no panel on screen twice."""
+    cfg = ctx.cfg
+    layout = layout_of(cfg)
+    n = LAYOUTS[layout]
+    rot = cfg.get("slot_rotation") or []
+    if not (isinstance(rot, list) and len(rot) == n and all(rot)):
+        sl = list(cfg.get("slots") or [])
+        rot = [[x] for x in sl[:n]]
+        pool = [p for p in CORNER_PANELS if p not in sl]
+        while len(rot) < n:                      # short slot list (e.g. switched to six): fill calmly
+            rot.append([pool.pop(0)] if pool else ["weather"])
+    rot = [[p for p in lst if p in PANELS] or ["weather"] for lst in rot]
+    out, used = [None] * n, set()
+    if cfg.get("rotate_pin_live", True):
+        for i, lst in enumerate(rot):
+            if len(lst) > 1:
+                hit = next((p for p in lst if p not in used and _urgent(p, ctx)), None)
+                if hit:
+                    out[i] = hit
+                    used.add(hit)
+    for i, lst in enumerate(rot):            # fixed corners claim theirs first
+        if out[i] is None and len(lst) == 1 and lst[0] not in used:
+            out[i] = lst[0]
+            used.add(lst[0])
+    for i, lst in enumerate(rot):
+        if out[i] is not None:
+            continue
+        k = ctx.rot_step % len(lst)
+        pick = next((lst[(k + j) % len(lst)] for j in range(len(lst)) if lst[(k + j) % len(lst)] not in used), None)
+        if pick is None:
+            pick = next((p for p in CORNER_PANELS if p not in used), lst[0])
+        out[i] = pick
+        used.add(pick)
+    return out
+
+
 def compose_quad(ctx: Ctx, panels: dict | None = None) -> Image.Image:
     """panels: optional {name: prerendered L image} to reuse (not re-render)."""
-    c = Image.new("L", (W, H), PAPER)
+    c = Image.new("L", (PW, PH), PAPER)
     c.paste(header(ctx), (0, 0))
-    c.paste(strip(ctx), (0, HEAD_H))
-    slots = ctx.cfg.get("slots", ["weather", "news", "sports", "sky"])
-    for name, box in zip(slots, slot_boxes()):
-        img = (panels or {}).get(name)
+    c.paste(strip(ctx), (0, px(HEAD_H)))
+    layout = layout_of(ctx.cfg)
+    boxes = slot_boxes(layout)
+    for name, box in zip(resolve_slots(ctx), boxes):
+        size = (box[2] - box[0], box[3] - box[1])
+        img = (panels or {}).get(name) if size == (CELL_W, CELL_H) else None
         if img is None:
-            img = PANELS[name](ctx, (CELL_W, CELL_H))
-        c.paste(img, box[:2])
-    d = ImageDraw.Draw(c)
-    d.line((CELL_W - 1, GRID_Y + 6, CELL_W - 1, H - 6), fill=INK, width=2)
-    d.line((6, GRID_Y + CELL_H, W - 6, GRID_Y + CELL_H), fill=INK, width=2)
+            img = PANELS[name](ctx, size)
+        c.paste(img, (px(box[0]), px(box[1])))
+    d = draw(c)
+    for y in sorted({b[1] for b in boxes if b[1] > GRID_Y}):
+        d.line((6, y, W - 6, y), fill=INK, width=2)
+    for x in sorted({b[0] for b in boxes if b[0] > 0}):
+        d.line((x - 1, GRID_Y + 6, x - 1, H - 6), fill=INK, width=2)
     return c
 
 
@@ -1062,7 +1861,7 @@ def detail_sky(ctx, size):
     text(d, (16, 8), f"{radius} nm", F("cm", 15))
     x = 410
     right = panel_sky(ctx, (390, 207))
-    c.paste(right, (x, 0))
+    c.paste(right, (px(x), 0))
     y = 214
     d.line((x, y - 4, w - 10, y - 4), fill=INK, width=2)
     text(d, (x + 8, y), f"LOGBOOK · {ctx.day_count} TODAY", F("cb", 17))
@@ -1081,20 +1880,66 @@ def detail_sky(ctx, size):
     return c
 
 
-DETAILS = {"weather": detail_weather, "news": detail_news, "sports": detail_sports, "sky": detail_sky}
+def detail_shabbat(ctx, size):
+    c, d = canvas(size)
+    w, h = size
+    c.paste(panel_shabbat(ctx, (w, 207)), (0, 0))
+    sh = ctx.shabbat
+    y = 214
+    d.line((10, y - 4, w - 10, y - 4), fill=INK, width=2)
+    if sh is None:
+        return c
+    show = _jshow(ctx)
+    lines = []
+    if "hebdate" in show and sh.hebdate:
+        lines.append(("Hebrew date", sh.hebdate))
+    if "parsha" in show and sh.parsha:
+        lines.append(("Torah reading", f"Parashat {sh.parsha}" if not sh.parsha.startswith(("Parashat", "Rosh", "Yom", "Pesach", "Sukkot", "Shavuot")) else sh.parsha))
+    if "omer" in show and sh.omer:
+        lines.append(("Omer", sh.omer))
+    if "dafyomi" in show and sh.daf:
+        lines.append(("Daf yomi", sh.daf))
+    f, fb = F("m", 17), F("csb", 17)
+    # two columns: facts on the left, the fuller upcoming list on the right
+    ly = y + 2
+    for k, v in lines:
+        text(d, (16, ly), k, fb)
+        text(d, (16, ly + 20), ellipsize(d, v, f, 300), f)
+        ly += 46
+    text(d, (16, h - 22), f"Hebcal · {sh.location or 'Teaneck'}", F("cm", 15))
+    x = 340 if lines else 16
+    if lines:
+        d.line((x - 12, y + 2, x - 12, h - 6), fill=INK, width=1)
+    text(d, (x, y + 2), "COMING UP", F("cb", 17))
+    ry = y + 26
+    evs = _jevents(ctx)
+    if not evs:
+        text(d, (x, ry), "Nothing in the next few weeks", f)
+    for e in evs[: (h - 4 - ry) // 22]:
+        _jrow(d, x, ry, w, e, F("cm", 16), F("csb", 16), dw=96)
+        ry += 22
+    return c
+
+
+DETAILS = {"weather": detail_weather, "news": detail_news, "sports": detail_sports, "sky": detail_sky,
+           "shabbat": detail_shabbat, "calendar": detail_calendar, "trips": detail_trips,
+           "shopping": detail_shopping, "scoreboard": detail_scoreboard}
 
 
 def compose_page(ctx: Ctx, name: str) -> Image.Image:
-    c = Image.new("L", (W, H), PAPER)
+    c = Image.new("L", (PW, PH), PAPER)
     c.paste(header(ctx), (0, 0))
     # the strip becomes a page title bar with position dots
     s, d = canvas((W, STRIP_H))
-    titles = {"weather": "Weather", "news": "News & markets", "sports": "Scores & schedule", "sky": "Sky above"}
+    titles = {"weather": "Weather", "news": "News & markets", "sports": "Scores & schedule", "sky": "Sky above",
+              "shabbat": "Jewish calendar",
+              "calendar": "Calendar", "trips": "Trips", "shopping": "Shopping list",
+              "scoreboard": "Scoreboard"}
     text(d, (14, STRIP_H / 2 - 1), titles.get(name, name).upper(), F("cb", 19), anchor="lm")
     text(d, (W - 14, STRIP_H / 2 - 1), "middle: back  ·  right: next  ·  left: home", F("cm", 15), anchor="rm")
     d.line((0, STRIP_H - 1, W, STRIP_H - 1), fill=INK, width=2)
-    c.paste(s, (0, HEAD_H))
-    c.paste(DETAILS[name](ctx, BODY), (0, GRID_Y))
+    c.paste(s, (0, px(HEAD_H)))
+    c.paste(DETAILS[name](ctx, BODY), (0, px(GRID_Y)))
     return c
 
 
@@ -1113,7 +1958,11 @@ def compose_gray(ctx: Ctx) -> Image.Image:
     # Snap to the 4 levels. The midpoints are skewed dark a little: e-paper
     # greys read lighter than they are on a monitor, and thin anti-aliased
     # strokes otherwise fade.
-    q = img.point(lambda v: 0 if v < 60 else 85 if v < 140 else 170 if v < 215 else 255)
+    if GRAY_LEVELS == 16:
+        # 16 levels (E1003): same dark skew, finer steps. Values 0,17,..,255.
+        q = img.point(lambda v: min(15, max(0, round((v - 12) * 15 / 231))) * 17)
+    else:
+        q = img.point(lambda v: 0 if v < 60 else 85 if v < 140 else 170 if v < 215 else 255)
     if ctx.cfg.get("dark", False):
         q = q.point(lambda v: 255 - v)
     return q
@@ -1123,6 +1972,17 @@ def pack2(gray: Image.Image) -> bytes:
     """L image of 0/85/170/255 -> 2bpp, 4 px per byte, MSB first, 0=black..3=white."""
     v = gray.point(lambda p: p // 85).tobytes()
     return bytes((v[i] << 6) | (v[i + 1] << 4) | (v[i + 2] << 2) | v[i + 3] for i in range(0, len(v), 4))
+
+
+def pack4(gray: Image.Image) -> bytes:
+    """L image of 0/17/../255 -> 4bpp, 2 px per byte, even x in the high nibble, 0=black..15=white
+    (Seeed_GFX's 4bpp grey sprite layout, which the E1003 firmware copies straight in)."""
+    v = gray.point(lambda p: p // 17).tobytes()
+    return bytes((v[i] << 4) | v[i + 1] for i in range(0, len(v), 2))
+
+
+def pack_gray(gray: Image.Image) -> bytes:
+    return pack4(gray) if GRAY_LEVELS == 16 else pack2(gray)
 
 
 def compose(ctx: Ctx) -> Image.Image:
@@ -1150,11 +2010,11 @@ def encode_reel(frames) -> bytes:
         img, delay, full = fr[:3]
         gray = fr[3] if len(fr) > 3 else None
         if prev is None or full or gray is not None:
-            box = (0, 0, W, H)
+            box = (0, 0) + img.size
         else:
             box = ImageChops.logical_xor(prev, img).getbbox() or (0, 0, 8, 1)
         x0 = box[0] & ~7
-        x1 = min(W, (box[2] + 7) & ~7)
+        x1 = min(img.size[0], (box[2] + 7) & ~7)
         y0, y1 = box[1], box[3]
         for v in (x0, y0, x1, y1, delay):
             out += int(v).to_bytes(2, "little")
@@ -1162,7 +2022,7 @@ def encode_reel(frames) -> bytes:
             # flags bit1: full-screen grey frame, 1-bit rows then 2bpp rows
             out += bytes([3])
             out += img.tobytes()
-            out += pack2(gray)
+            out += pack_gray(gray)
         else:
             out += bytes([1 if full else 0])
             out += img.crop((x0, y0, x1, y1)).tobytes()
@@ -1170,12 +2030,13 @@ def encode_reel(frames) -> bytes:
     return bytes(out)
 
 
-def region_frames(prev: Image.Image, new: Image.Image):
+def region_frames(prev: Image.Image, new: Image.Image, layout="quad"):
     """Split one update into per-region partial refreshes (header, strip, each
     slot), so a change in two corners refreshes two small windows instead of
     one window spanning the whole screen. Each partial costs ~1s whatever its
     size, but a smaller window ghosts less."""
-    boxes = [(0, 0, W, HEAD_H), (0, HEAD_H, W, GRID_Y)] + slot_boxes()
+    boxes = [tuple(px(v) for v in b) for b in
+             [(0, 0, W, HEAD_H), (0, HEAD_H, W, GRID_Y)] + slot_boxes(layout)]
     frames = []
     cur = prev.copy()
     for b in boxes:
@@ -1188,3 +2049,7 @@ def region_frames(prev: Image.Image, new: Image.Image):
     if ImageChops.logical_xor(cur, new).getbbox() is not None:   # anything outside the boxes
         frames.append(new)
     return frames
+
+
+if os.environ.get("QUAD_MODEL"):
+    set_profile(os.environ["QUAD_MODEL"].lower())
