@@ -1672,7 +1672,7 @@ def slot_boxes(layout="quad"):
     if layout == "thirds":
         # Left column: Shabbat SHORT on top (rows 0-1 = 1/3 body height; times are compact)
         # + newsletter TALL below (rows 1-3 = 2/3 body height, reading room).
-        # Middle: weather / trips / calendar (1/3 each).
+        # Middle: weather / news / trips (1/3 each).
         # Right: sports (tall) + scoreboard — two panels; room for a third later.
         xs = [0, W // 3, 2 * W // 3, W]
         ch = (H - GRID_Y) // 3
@@ -1681,8 +1681,8 @@ def slot_boxes(layout="quad"):
             (xs[0], ys[0], xs[1], ys[1]),  # shabbat short (top 1/3)
             (xs[0], ys[1], xs[1], ys[3]),  # newsletter tall (bottom 2/3)
             (xs[1], ys[0], xs[2], ys[1]),  # weather
-            (xs[1], ys[1], xs[2], ys[2]),  # trips
-            (xs[1], ys[2], xs[2], ys[3]),  # calendar
+            (xs[1], ys[1], xs[2], ys[2]),  # news
+            (xs[1], ys[2], xs[2], ys[3]),  # trips
             (xs[2], ys[0], xs[3], ys[2]),  # sports tall
             (xs[2], ys[2], xs[3], ys[3]),  # scoreboard
         ]

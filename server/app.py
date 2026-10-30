@@ -643,6 +643,28 @@ class Board:
             self.page_since = time.time()
             self.redraw(f"page {self.page}", major=True)
 
+    def tap(self, tx, ty):
+        """Touch (E1003). Home: tap a slot to open its page. Detail page: any tap goes home."""
+        with self.cond:
+            self.unread = False
+            if self.note is not None or self.page != "quad":
+                self.note = None
+                self.page = "quad"
+                self.page_since = time.time()
+                return self.redraw("home (tap)", major=True)
+            k = R.K or 1.0
+            ux, uy = tx / k, ty / k
+            boxes = R.slot_boxes(R.layout_of(cfg))
+            names = R.resolve_slots(self.ctx())
+            hit = None
+            for (x0, y0, x1, y1), name in zip(boxes, names):
+                if x0 <= ux < x1 and y0 <= uy < y1:
+                    hit = name
+                    break
+        self.note_event(f"tap {tx},{ty} -> {hit or '(none)'}")
+        if hit in PAGES and hit != "quad":
+            self.goto(hit)
+
     def goto(self, page):
         with self.cond:
             self.auto_sb = False
@@ -1154,6 +1176,13 @@ class H(BaseHTTPRequestHandler):
         if btn in ("0", "1", "2"):
             board.note_event(f"button {btn}")
             board.button(int(btn))
+        elif q.get("tx") and q.get("ty"):
+            try:
+                tx, ty = int(q["tx"]), int(q["ty"])
+            except ValueError:
+                tx = ty = None
+            if tx is not None:
+                board.tap(tx, ty)
         deadline = time.time() + wait
         base = 0
         with board.cond:

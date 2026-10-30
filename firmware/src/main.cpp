@@ -16,6 +16,7 @@
 #include "display.h"
 #include "secrets.h"
 #include "sensors.h"
+#include "touch.h"
 #include "wifisetup.h"
 
 RTC_DATA_ATTR static uint32_t rtcVersion = 0;   // what the glass shows, per the server
@@ -100,6 +101,7 @@ static void sleepNow(uint32_t seconds) {
   led(false);
   WiFi.disconnect(true);
   WiFi.mode(WIFI_OFF);
+  touch::sleepPrep();
   uint64_t mask = (1ULL << KEY0_PIN) | (1ULL << KEY1_PIN) | (1ULL << KEY2_PIN);
   for (int p : {KEY0_PIN, KEY1_PIN, KEY2_PIN}) {
     rtc_gpio_pullup_en((gpio_num_t)p);
@@ -224,7 +226,8 @@ static bool readLine(String &out, uint32_t deadline) {
 // One poll. While waiting for the first byte, a button press aborts it so the
 // caller can re-ask with the button attached -- the long-poll must never make
 // a press feel ignored.
-static Resp poll(uint32_t waitS, int8_t btn, bool boot, bool abortable) {
+static Resp poll(uint32_t waitS, int8_t btn, bool boot, bool abortable,
+                 int16_t tx = -1, int16_t ty = -1) {
   Resp r;
   if (!tls.connected()) {
     tls.stop();
@@ -247,6 +250,7 @@ static Resp poll(uint32_t waitS, int8_t btn, bool boot, bool abortable) {
                    NOTE_PATH, NOTE_TOKEN, rtcVersion, waitS, vbat, WiFi.RSSI(), boot ? "&boot=1" : "");
   if (haveT) n += snprintf(path + n, sizeof(path) - n, "&t=%.1f&rh=%.0f", t, rh);
   if (btn >= 0) n += snprintf(path + n, sizeof(path) - n, "&btn=%d", btn);
+  else if (tx >= 0 && ty >= 0) n += snprintf(path + n, sizeof(path) - n, "&tx=%d&ty=%d", tx, ty);
   if (!bufferValid) n += snprintf(path + n, sizeof(path) - n, "&fresh=1");
 
   tls.printf("GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: quadboard\r\nConnection: keep-alive\r\n\r\n",
@@ -262,7 +266,8 @@ static Resp poll(uint32_t waitS, int8_t btn, bool boot, bool abortable) {
       tls.stop();
       return r;
     }
-    if (abortable && pendingBtn >= 0) {
+    touch::poll();
+    if (abortable && (pendingBtn >= 0 || touch::pending())) {
       tls.stop();
       r.aborted = true;
       led(false);
@@ -369,6 +374,7 @@ void setup() {
   }
 
   display::begin();
+  touch::begin();
   reel = (uint8_t *)ps_malloc(MAX_REEL);
 
   // hold right + tap left => forget wifi
@@ -426,10 +432,14 @@ void loop() {
     sleepNow(nextSleepS);
   }
 
+  touch::poll();
   int8_t b = takeBtn();
+  int16_t tx = -1, ty = -1;
+  if (b < 0 && touch::take(&tx, &ty)) blip();   // never send btn and tap together
   if (b >= 0) blip();
-  Resp r = poll(b >= 0 ? 0 : POLL_WAIT_S, b, false, b < 0);
-  if (r.aborted) return;   // a button arrived mid-wait; loop re-polls with it
+  bool urgent = b >= 0 || tx >= 0;
+  Resp r = poll(urgent ? 0 : POLL_WAIT_S, b, false, !urgent, tx, ty);
+  if (r.aborted) return;   // a button/tap arrived mid-wait; loop re-polls with it
   if (r.code == 0) {
     failures++;
     delay(min(2000u * failures, 30000u));
@@ -441,7 +451,7 @@ void loop() {
 
   // After an animation, e-paper partials leave faint ghosts. Once things have
   // been still for a while, one full refresh wipes them.
-  if (cleanAfterS && partialsSinceFull >= 10 && pendingBtn < 0 &&
+  if (cleanAfterS && partialsSinceFull >= 10 && pendingBtn < 0 && !touch::pending() &&
       millis() - lastPartialMs > cleanAfterS * 1000UL) {
     Serial.println("[epd] ghost-clean full refresh");
     display::full();
