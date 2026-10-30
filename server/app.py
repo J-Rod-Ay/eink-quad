@@ -108,7 +108,7 @@ DEFAULTS = {
 }
 
 # E1003 (QUAD_MODEL=e1003): the 10.3" panel defaults to the 3x3 home.
-E1003_SLOTS = ["shabbat", "newsletter", "weather", "trips", "calendar", "sports", "scoreboard"]
+E1003_SLOTS = ["shabbat", "newsletter", "weather", "news", "trips", "sports", "scoreboard"]
 if R.MODEL == "e1003":
     DEFAULTS["layout"] = "thirds"
     DEFAULTS["slots"] = [p for p in E1003_SLOTS if p in R.CORNER_PANELS][:9]

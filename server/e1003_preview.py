@@ -17,7 +17,7 @@ CUSTOM = {"devils": ("Devils", "hockey", "nhl", "nj"), "jets": ("Jets", "footbal
 S.TEAMS.update(CUSTOM)
 CFG = {"lat": LAT, "lon": LON, "feeds": ["world", "us", "markets"], "tickers": ["^GSPC", "^DJI", "^IXIC", "BTC-USD"],
        "teams": list(CUSTOM), "radar_nm": 25,
-       "layout": "thirds", "slots": ["shabbat", "newsletter", "weather", "trips", "calendar", "sports", "scoreboard"]}
+       "layout": "thirds", "slots": ["shabbat", "newsletter", "weather", "news", "trips", "sports", "scoreboard"]}
 now = time.time()
 
 
@@ -64,7 +64,7 @@ import shul as SHUL  # noqa: E402
 shul = SHUL.load()
 ctx = R.Ctx(now=now, cfg=CFG, weather=wx, heads=heads, quotes=qs, teams=teams, featured=fl, nearby=nearby,
             recent=[], day_count=12, shabbat=sh, calendar=cal, trips=[trip], shopping=shop,
-            brief="E1003 home: left Shabbat + newsletter, middle weather/TripIt/calendar, right sports.",
+            brief="E1003 home: left Shabbat + newsletter, middle weather/markets/trips, right sports.",
             indoor_f=70.5, indoor_rh=44, battery=86, updated=now, shul=shul)
 g = R.compose_gray(ctx)
 assert g.size == (1872, 1404), g.size
