@@ -306,6 +306,7 @@ class Board:
         self.page_since = 0.0
         self.auto_sb = False        # on the scoreboard because scoreboard_auto put us there
         self.rot_step = 0           # slot_rotation position
+        self.gallery_offset = 0     # E1001 gallery: button steps between modes
         self.note = None            # nb.Note while one is on screen
         self.note_until = 0.0
         self.unread = False
@@ -353,6 +354,15 @@ class Board:
             self.snap["day_count"] = sky.day_stats().count
             self.snap["event"] = events.next_event()
             self.snap["upcoming"] = events.upcoming()
+        elif name == "gallery":
+            if R.layout_of(cfg) == "gallery":
+                import gallery
+                g = dict(self.snap.get("gallery") or {})
+                day = time.strftime("%m-%d")
+                if force or g.get("day") != day or not g.get("onthisday"):
+                    g["onthisday"], g["day"] = gallery.fetch_onthisday(), day
+                g["wire"] = gallery.fetch_wire(S.TEAMS, cfg.get("teams") or [])
+                self.snap["gallery"] = g
         elif name == "shabbat":
             self.snap["shabbat"] = S.shabbat(cfg, force)
         elif name in ("shul", "newsletter"):
@@ -394,7 +404,8 @@ class Board:
                      recent=sn.get("recent") or [], day_count=sn.get("day_count", 0), nearby=sn.get("nearby") or [],
                      event=sn.get("event"), upcoming=sn.get("upcoming") or [], shabbat=sn.get("shabbat"), shul=sn.get("shul"),
                      calendar=sn.get("calendar"), trips=sn.get("trips"), live=sn.get("live_flight"),
-                     shopping=sn.get("shopping") or [], rot_step=self.rot_step, brief=sn.get("brief", ""),
+                     shopping=sn.get("shopping") or [], rot_step=self.rot_step,
+                     gallery=sn.get("gallery") or {}, gallery_offset=self.gallery_offset, brief=sn.get("brief", ""),
                      sticky=sticky, indoor_f=t_f, indoor_rh=dv.get("rh"), battery=batt,
                      on_usb=dv.get("mode") == "live", cycle=self.cycle, updated=self.updated or now,
                      page=page or self.page)
@@ -434,6 +445,8 @@ class Board:
             and changed and not quiet_now())
         if changed and cfg.get("crisp") and (major or self.partials >= cfg.get("max_partials", 4)):
             full = True
+        if changed and R.layout_of(cfg) == "gallery" and self.page == "quad":
+            full = True          # photos ghost badly under partials
         if not changed and not full:
             return
         if full:
@@ -476,7 +489,7 @@ class Board:
         beat = int(now // iv)
         due = []
         if self.beats.get("main") != beat:
-            due = ["weather", "news", "sports", "sky", "shabbat", "calendar", "trips", "brief"]
+            due = ["weather", "news", "sports", "sky", "shabbat", "calendar", "trips", "brief", "gallery"]
             self.beats["main"] = beat
             with self.cond:
                 self.cycle += 1
@@ -637,6 +650,9 @@ class Board:
                 self.redraw("refresh button", major=True)
             return
         with self.cond:
+            if R.layout_of(cfg) == "gallery" and self.page == "quad":
+                self.gallery_offset += 1 if b == 2 else -1     # step modes; the timer keeps rotating from here
+                return self.redraw(f"gallery step {self.gallery_offset}", major=True)
             self.auto_sb = False
             i = PAGES.index(self.page)
             self.page = PAGES[(i + (1 if b == 2 else -1)) % len(PAGES)]

@@ -459,6 +459,8 @@ class Ctx:
     shopping: list = field(default_factory=list)   # [{"text", "done"}]
     shul: object = None           # YIOT newsletter highlights dict | None
     rot_step: int = 0             # slot_rotation position (advances on the regular beat)
+    gallery: dict = field(default_factory=dict)    # gallery.py data: {"onthisday": {...}, "wire": [...]}
+    gallery_offset: int = 0       # button steps through gallery modes
 
 
 def _deg(v):
@@ -1796,7 +1798,7 @@ def _next_up(ctx):
     return ""
 
 
-LAYOUTS = {"quad": 4, "six": 6, "nine": 9, "thirds": 7}
+LAYOUTS = {"quad": 4, "six": 6, "nine": 9, "thirds": 7, "gallery": 1}   # gallery = E1001 living screen (gallery.py)
 GRID_DIMS = {"quad": (2, 2), "six": (3, 2), "nine": (3, 3)}
 
 
@@ -2200,6 +2202,9 @@ def _compose_l(ctx: Ctx) -> Image.Image:
 def compose_gray(ctx: Ctx) -> Image.Image:
     """The same frame in 4 grey levels (L image holding only 0/85/170/255)."""
     global AA
+    if is_gallery(ctx):
+        import gallery
+        return gallery.compose_gray(ctx)
     AA = True
     try:
         img = _compose_l(ctx)
@@ -2235,7 +2240,14 @@ def pack_gray(gray: Image.Image) -> bytes:
     return pack4(gray) if GRAY_LEVELS == 16 else pack2(gray)
 
 
+def is_gallery(ctx) -> bool:
+    return layout_of(ctx.cfg) == "gallery" and ctx.page not in DETAILS
+
+
 def compose(ctx: Ctx) -> Image.Image:
+    if is_gallery(ctx):
+        import gallery
+        return gallery.dither(gallery.compose(ctx), 2).convert("1")
     if ctx.page in DETAILS:
         img = compose_page(ctx, ctx.page)
     else:
