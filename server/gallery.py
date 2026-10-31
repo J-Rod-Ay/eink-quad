@@ -1,20 +1,24 @@
 """E1001 "living gallery": an atmospheric single-image screen for the 7.5" 800x480 panel.
 
-Modes, in cycle order:   live -> tonight -> onthisday -> wire
-  live       a followed team is playing: mood image (team story photo, else big logos) + score line.
-             Locks the screen while live; the board's live beat refreshes it (~1 min).
-  tonight    the next matchup for a followed team (logos, time, TV, odds).
-  onthisday  a history / science event for today's date (Wikipedia "selected" feed), with a
-             Wikimedia Commons still -- only freely licensed (PD / CC) Commons files are shown,
-             and the licence + author are credited on screen. Sports items are skipped.
-  wire       one sports-news still + headline (ESPN team news). ESPN photos are copyrighted:
-             personal, in-home display only, credited, never republished.
+One full-screen category at a time, classic screensaver style. Supplemental to the E1003 big
+board on the same fridge, so it NEVER shows scores or scoreboards -- only mood.
 
-Mode choice (pick_mode) is a pure function of (data, time, button offset):
-  * anything live -> "live" (lock)
-  * otherwise the available modes rotate every gallery_rotate_min (default 20) minutes;
-    the E1001's right/middle buttons add +1/-1 to an offset so you can step manually.
-  * thin modes (no data) are skipped, so wire fills in when tonight / onthisday are empty.
+Modes, in cycle order:   onthisday -> matchup -> weather -> trip -> news -> wire
+  onthisday  history / science event for today (Wikipedia "selected" feed) with a freely licensed
+             Commons still (licence + author credited). Sports items are skipped.
+  matchup    tonight / this-week matchup mood art: giant faint logos, "vs", day + time + TV.
+             No scores even while live (the E1003 owns scores); a live game just reads "ON NOW".
+  weather    atmosphere: drawn sky (rain / snow / sun rays / fog / cloud) behind a huge temperature,
+             condition and a 24h temperature ribbon.
+  trip       one trip or calendar beat: next TripIt trip (countdown + segments), else next event.
+  news       one news photo + headline (WSJ RSS media:content), credited.
+  wire       sports-wire still + headline (ESPN team news), only while no followed team is live.
+             Copyrighted photos: personal, in-home display only, credited.
+
+Mode choice (pick_mode) is a pure function of (data, time, offset):
+  * modes rotate every gallery_rotate_min (default 5) minutes;
+  * tap anywhere / right button = next, left button = previous (offset +-1);
+  * thin modes (no data) are skipped.
 
 Network only in fetch_*(); render_*() never fetches (images are cached to cache/gallery/).
 """
@@ -36,7 +40,10 @@ import render as R
 HERE = os.path.dirname(os.path.abspath(__file__))
 DIR = os.path.join(HERE, "cache", "gallery")
 UA = "eink-quad/0.1 (personal e-paper dashboard; hobby project)"
-MODES = ["live", "tonight", "onthisday", "wire"]
+MODES = ["onthisday", "matchup", "weather", "trip", "news", "wire"]
+ROTATE_MIN = 5
+NAMES = {"onthisday": "ON THIS DAY", "matchup": "THE MATCHUP", "weather": "OUTSIDE",
+         "trip": "COMING UP", "news": "THE NEWS", "wire": "THE WIRE"}
 
 # ------------------------------------------------------------------ fetch
 
@@ -159,32 +166,81 @@ def fetch_wire(teams_cfg, keys):
     return [a for a in out if a.get("image")]
 
 
+def fetch_news(feeds=("world", "us"), n=6):
+    """Newest WSJ RSS items that carry a photo -> [{headline, section, image, summary}]."""
+    import sources as S
+    import xml.etree.ElementTree as ET
+    out = []
+    for key in feeds:
+        if key not in S.WSJ_FEEDS:
+            continue
+        label, url = S.WSJ_FEEDS[key]
+        try:
+            r = requests.get(url, headers={"User-Agent": S.UA_BROWSER}, timeout=10)
+            r.raise_for_status()
+            root = ET.fromstring(r.content)
+        except Exception as e:
+            print("gallery news:", key, e)
+            continue
+        got = 0
+        for it in root.iter("item"):
+            m = it.find("{http://search.yahoo.com/mrss/}content")
+            title = S._clean(it.findtext("title"))
+            if m is None or not title or S.JUNK.search(title):
+                continue
+            img = cache_image(m.get("url"))
+            if img:
+                out.append({"headline": title, "section": label, "image": img,
+                            "summary": S._clean(it.findtext("description"))[:240]})
+                got += 1
+            if got >= n:
+                break
+    return out
+
+
 # ------------------------------------------------------------------ mode logic
 
-def available(data, teams):
+def available(data, teams, weather=None, trips=None, calendar=None, now=None):
     av = []
-    if any(r.live for r in teams):
-        av.append("live")
-    if any(r.next for r in teams):
-        av.append("tonight")
     if data.get("onthisday"):
         av.append("onthisday")
-    if data.get("wire"):
+    if any(r.next or r.live for r in teams):
+        av.append("matchup")
+    if weather is not None:
+        av.append("weather")
+    if _beat(trips, calendar, now or time.time()):
+        av.append("trip")
+    if data.get("news"):
+        av.append("news")
+    if data.get("wire") and not any(r.live for r in teams):   # wire stills only when teams are quiet
         av.append("wire")
     return av
 
 
-def pick_mode(data, teams, now, cfg, offset=0):
-    if cfg.get("gallery_lock_live", True) and any(r.live for r in teams):
-        return "live"
+def rotate_min(cfg):
+    return max(1, int(cfg.get("gallery_rotate_min") or ROTATE_MIN))
+
+
+def pick_mode(data, teams, now, cfg, offset=0, weather=None, trips=None, calendar=None):
     force = cfg.get("gallery_mode") or ""
-    av = [m for m in available(data, teams) if m != "live"]
-    if force in av:
+    if force in MODES:
         return force
+    av = available(data, teams, weather, trips, calendar, now)
     if not av:
         return "onthisday"
-    slot = int(now // (max(5, int(cfg.get("gallery_rotate_min", 20))) * 60))
+    slot = int(now // (rotate_min(cfg) * 60))
     return av[(slot + offset) % len(av)]
+
+
+def _beat(trips, calendar, now):
+    """The one trip / calendar beat worth a screen: current or next trip (60 d), else next event."""
+    for t in sorted(trips or [], key=lambda t: t.start):
+        if t.end >= now and t.start - now < 60 * 86400:
+            return ("trip", t)
+    for e in sorted(calendar or [], key=lambda e: e.start):
+        if e.end >= now:
+            return ("event", e)
+    return None
 
 
 # ------------------------------------------------------------------ render helpers
@@ -229,11 +285,10 @@ def _footer(d, w, h, mode, now, credit=""):
         else:
             d.ellipse((x, y + 13 - r, x + 2 * r, y + 13 + r), outline=R.INK, width=2)
         x += 20
-    names = {"live": "LIVE", "tonight": "NEXT UP", "onthisday": "ON THIS DAY", "wire": "THE WIRE"}
-    R.text(d, (x + 6, y + 13), names[mode], R.F("cb", 17), anchor="lm")
+    R.text(d, (x + 6, y + 13), NAMES[mode], R.F("cb", 17), anchor="lm")
     R.text(d, (w - 14, y + 13), time.strftime("%a %b %-d · %-I:%M %p", time.localtime(now)), R.F("cm", 17), anchor="rm")
     if credit:
-        R.text(d, (w // 2 + 40, y + 13), R.ellipsize(d, credit, R.F("cr", 14), 300), R.F("cr", 14), anchor="mm")
+        R.text(d, (w // 2 + 70, y + 13), R.ellipsize(d, credit, R.F("cr", 14), 250), R.F("cr", 14), anchor="mm")
 
 
 def _logo(url, size):
@@ -244,7 +299,7 @@ def _logo(url, size):
         return None
 
 
-# ------------------------------------------------------------------ the four screens
+# ------------------------------------------------------------------ the six screens
 
 def render_onthisday(data, now, size):
     w, h = size
@@ -293,87 +348,234 @@ def render_wire(data, now, size):
     return c
 
 
-def _matchup(c, d, g, row, y, w, big=150):
-    """Two logos with the score / time between them."""
-    us = _logo(row.logo or g.our_logo, big)
-    them = _logo(g.opp_logo, big)
-    left, right = (them, us) if g.home else (us, them)
-    lname, rname = (g.opp_name or g.opp, row.label) if g.home else (row.label, g.opp_name or g.opp)
-    for im, cx, nm in ((left, w // 4, lname), (right, 3 * w // 4, rname)):
-        if im is not None:
-            c.paste(im.convert("L"), (cx - im.size[0] // 2, y))
-        else:
-            R.text(d, (cx, y + big // 2), nm[:3].upper(), R.F("cb", 80), anchor="mm")
-        R.text(d, (cx, y + big + 22), nm, R.F("cb", 30), anchor="mm")
+def _faint(im, k=6):
+    """Wash a logo to a pale backdrop tone."""
+    return im.convert("L").point(lambda v: 255 - (255 - v) // k)
 
 
-def render_live(data, teams, now, size):
+def render_matchup(data, teams, now, size):
+    """Mood art for tonight's / this week's game. Never a score."""
     w, h = size
     c = Image.new("L", size, R.PAPER)
     d = ImageDraw.Draw(c)
-    row = next((r for r in teams if r.live), None)
-    if row is None:
-        return render_tonight(data, teams, now, size)
-    g = row.live
-    # mood: that team's latest story photo, washed out so the score reads on top of a paper band
-    story = next((a for a in data.get("wire") or [] if a.get("key") == row.key), None)
-    if story:
-        ph = _photo(story["image"], (w, h - 26), gamma=0.55, contrast=1.0)
-        c.paste(ph, (0, 0))
+    rows = sorted((r for r in teams if r.live or r.next), key=lambda r: (0 if r.live else 1, (r.next.start if r.next else 0)))
+    if not rows:
+        R.text(d, (w / 2, h / 2), "No games this week", R.F("cb", 40), anchor="mm")
+        _footer(d, w, h, "matchup", now)
+        return c
+    row = rows[0]
+    g = row.live or row.next
+    us, them = _logo(row.logo or g.our_logo, 400), _logo(g.opp_logo, 400)
+    left, right = (them, us) if g.home else (us, them)
+    lname, rname = (g.opp_name or g.opp, row.label) if g.home else (row.label, g.opp_name or g.opp)
+    # giant faint logos bleed off both edges: the "poster"
+    for im, x in ((left, -90), (right, w - 310)):
+        if im is not None:
+            f = _faint(im, 5)
+            c.paste(f, (x, (h - 26 - f.size[1]) // 2))
+    # crisp mid-size logos + names
+    ours = row.logo or g.our_logo
+    lurl, rurl = (g.opp_logo, ours) if g.home else (ours, g.opp_logo)
+    for im, cx, nm in ((_logo(lurl, 150), w // 4, lname), (_logo(rurl, 150), 3 * w // 4, rname)):
+        if im is not None:
+            c.paste(im.convert("L"), (cx - im.size[0] // 2, 120))
+        else:
+            R.text(d, (cx, 195), nm[:3].upper(), R.F("cb", 90), anchor="mm")
+        R.text(d, (cx, 300), nm.upper(), R.F("cb", 34), anchor="mm")
+    R.text(d, (w / 2, 195), "vs" if g.home else "@", R.F("cb", 72), anchor="mm")
+    if row.live:
+        head = "ON NOW"
     else:
-        # no story photo: a giant, faint team logo as the mood backdrop
-        lg = _logo(row.logo or g.our_logo, 420)
-        if lg is not None:
-            faint = lg.convert("L").point(lambda v: 255 - (255 - v) // 5)
-            c.paste(faint, (w - faint.size[0] + 60, (h - faint.size[1]) // 2))
-            c.paste(faint, (-60, (h - faint.size[1]) // 2))
-    _band(c, 70, 360)
-    d.line((0, 70, w, 70), fill=R.INK, width=2)
-    d.line((0, 360, w, 360), fill=R.INK, width=2)
-    R.pill(d, 18, 22, "LIVE", R.F("cb", 22))
-    _matchup(c, d, g, row, 90, w, big=170)
-    a, b = (g.them, g.us) if g.home else (g.us, g.them)
-    R.text(d, (w / 2, 175), f"{a if a is not None else 0}–{b if b is not None else 0}", R.F("cb", 96), anchor="mm")
-    R.text(d, (w / 2, 245), g.detail or "", R.F("csb", 28), anchor="mm")
-    if g.tv:
-        R.text(d, (w / 2, 280), g.tv, R.F("cm", 22), anchor="mm")
-    others = [r for r in teams if r.live and r is not row]
-    if others:
-        s = "  ·  ".join(f"{r.label} {r.live.us}-{r.live.them} {r.live.detail}" for r in others[:2])
-        _band(c, 370, h - 30)
-        R.text(d, (w / 2, 398), R.ellipsize(d, s, R.F("cb", 24), w - 40), R.F("cb", 24), anchor="mm")
-    _footer(d, w, h, "live", now, f"Photo: {story['credit']} (ESPN)" if story else "")
+        lt, ln = time.localtime(g.start), time.localtime(now)
+        same = lt[:3] == ln[:3]
+        day = ("TONIGHT" if lt.tm_hour >= 17 else "TODAY") if same else time.strftime("%A", lt).upper()
+        head = f"{day} · {'TBD' if g.time_tbd else time.strftime('%-I:%M %p', lt)}"
+    # header band on solid paper
+    d.rectangle((0, 0, w, 82), fill=R.PAPER)
+    d.line((0, 82, w, 82), fill=R.INK, width=2)
+    R.text(d, (w / 2, 42), head, R.F("cb", 54), anchor="mm")
+    bits = [b for b in (g.note, getattr(g, "venue", ""), g.tv, row.record and f"{row.label} {row.record}") if b]
+    if bits:
+        d.rectangle((0, 340, w, 392), fill=R.PAPER)
+        R.text(d, (w / 2, 366), R.ellipsize(d, "  ·  ".join(bits), R.F("csb", 26), w - 40), R.F("csb", 26), anchor="mm")
+    later = [r for r in rows[1:4] if r.next and not r.live]
+    if later:
+        d.rectangle((0, 398, w, h - 26), fill=R.PAPER)
+        d.line((40, 400, w - 40, 400), fill=R.INK, width=1)
+        for i, r in enumerate(later):
+            gg = r.next
+            s = f"{r.label} {'vs' if gg.home else '@'} {gg.opp} · {time.strftime('%a %-I:%M%p', time.localtime(gg.start))}"
+            R.text(d, ((i + 0.5) * w / len(later), 428), R.ellipsize(d, s, R.F("cm", 21), w // len(later) - 16),
+                   R.F("cm", 21), anchor="mm")
+    _footer(d, w, h, "matchup", now)
     return c
 
 
-def render_tonight(data, teams, now, size):
+def _sky(c, kind, box, now):
+    """Procedural atmosphere for the weather screen (deterministic per 5-minute slot)."""
+    import random
+    rnd = random.Random(int(now // 300))
+    d = ImageDraw.Draw(c)
+    x0, y0, x1, y1 = box
+    if kind in ("rain", "storm", "thunder"):
+        for _ in range(260):
+            x, y = rnd.randint(x0 - 40, x1), rnd.randint(y0, y1)
+            L = rnd.randint(18, 46)
+            d.line((x, y, x + L // 3, y + L), fill=rnd.choice((150, 190, 210)), width=rnd.choice((1, 2, 2)))
+    elif kind in ("snow",):
+        for _ in range(220):
+            x, y, r = rnd.randint(x0, x1), rnd.randint(y0, y1), rnd.choice((2, 3, 4, 6))
+            d.ellipse((x - r, y - r, x + r, y + r), fill=rnd.choice((160, 200)))
+    elif kind in ("fog",):
+        for i, y in enumerate(range(y0 + 20, y1, 34)):
+            d.rounded_rectangle((x0 + (i % 3) * 40 - 60, y, x1 - (i % 2) * 90, y + 14), 7, fill=205)
+    elif kind in ("sun", "partly"):
+        import math
+        cx, cy = x1 - 150, y0 + 150
+        for k in range(24):
+            a = k * math.pi / 12
+            d.line((cx + 120 * math.cos(a), cy + 120 * math.sin(a), cx + 700 * math.cos(a), cy + 700 * math.sin(a)),
+                   fill=215, width=10)
+        d.ellipse((cx - 100, cy - 100, cx + 100, cy + 100), fill=200)
+        if kind == "partly":
+            for bx, by, s in ((cx - 260, cy + 40, 1.0), (x0 + 60, y0 + 230, 0.8)):
+                _cloud(d, bx, by, s, 225)
+    else:   # cloud / overcast
+        for bx, by, s in ((x0 + 40, y0 + 40, 1.3), (x0 + 380, y0 + 10, 1.0), (x0 + 200, y0 + 200, 1.5), (x0 + 560, y0 + 170, 1.1)):
+            _cloud(d, bx, by, s, rnd.choice((205, 220, 230)))
+
+
+def _cloud(d, x, y, s, fill):
+    for dx, dy, r in ((0, 40, 50), (55, 10, 70), (130, 35, 55), (60, 55, 55)):
+        d.ellipse((x + dx * s - r * s, y + dy * s - r * s, x + dx * s + r * s, y + dy * s + r * s), fill=fill)
+
+
+def render_weather(wx, now, size):
     w, h = size
     c = Image.new("L", size, R.PAPER)
     d = ImageDraw.Draw(c)
-    nxt = sorted((r for r in teams if r.next), key=lambda r: r.next.start)
-    if not nxt:
-        R.text(d, (w / 2, h / 2), "No games on the slate", R.F("cb", 40), anchor="mm")
-        _footer(d, w, h, "tonight", now)
+    if wx is None:
+        R.text(d, (w / 2, h / 2), "No weather", R.F("cb", 40), anchor="mm")
+        _footer(d, w, h, "weather", now)
         return c
-    row = nxt[0]
-    g = row.next
-    lt, ln = time.localtime(g.start), time.localtime(now)
-    day = "TONIGHT" if lt[:3] == ln[:3] and lt.tm_hour >= 17 else (
-        "TODAY" if lt[:3] == ln[:3] else time.strftime("%A", lt).upper())
-    R.text(d, (w / 2, 40), f"{day} · {'TBD' if g.time_tbd else time.strftime('%-I:%M %p', lt)}",
-           R.F("cb", 44), anchor="mm")
-    _matchup(c, d, g, row, 88, w, big=180)
-    R.text(d, (w / 2, 178), "@" if not g.home else "vs", R.F("cb", 60), anchor="mm")
-    bits = [b for b in (g.note, g.tv, g.odds.details if g.odds else "", row.record) if b]
-    R.text(d, (w / 2, 335), R.ellipsize(d, "  ·  ".join(bits), R.F("cm", 24), w - 40), R.F("cm", 24), anchor="mm")
-    later = nxt[1:4]
-    if later:
-        d.line((40, 365, w - 40, 365), fill=R.INK, width=1)
-        for i, r in enumerate(later):
-            gg = r.next
-            s = f"{r.label} {'vs' if gg.home else '@'} {gg.opp}  {time.strftime('%a %-I:%M%p', time.localtime(gg.start))}"
-            R.text(d, ((i + 0.5) * w / len(later), 395), s, R.F("csb", 22), anchor="mm")
-    _footer(d, w, h, "tonight", now)
+    import sources as S
+    cond, kind = S.wmo(wx.code)
+    _sky(c, kind, (0, 0, w, h - 26), now)
+    try:
+        from PIL import ImageChops
+        ic = R.icon(kind, 170, night=not wx.is_day).convert("L")
+        box = (w - 210, 30, w - 40, 200)
+        c.paste(ImageChops.darker(c.crop(box), ic), box[:2])
+    except Exception:
+        pass
+    R.text(d, (28, 150), f"{wx.temp:.0f}°", R.F("cb", 220), anchor="lm")
+    R.text(d, (34, 285), cond, R.F("cb", 52), anchor="lm")
+    day = wx.days[0] if wx.days else None
+    sub = []
+    if day:
+        sub.append(f"H {day.hi:.0f}°  L {day.lo:.0f}°")
+    sub.append(f"feels {wx.feels:.0f}°")
+    if wx.wind >= 8:
+        sub.append(f"wind {wx.wind:.0f}")
+    R.text(d, (36, 335), "   ".join(sub), R.F("csb", 30), anchor="lm")
+    note = (wx.alerts[0][0] if wx.alerts else "") or wx.rain_note
+    # 24h temperature ribbon on paper
+    y0, y1 = 368, h - 30
+    d.rectangle((0, y0, w, h - 26), fill=R.PAPER)
+    d.line((0, y0, w, y0), fill=R.INK, width=2)
+    hr = (wx.hourly or [])[:24]
+    if hr:
+        ts = [t for _, t, _, _ in hr]
+        lo, hi = min(ts), max(ts) or 1
+        span = max(1, hi - lo)
+        pts = [(30 + i * (w - 60) / max(1, len(hr) - 1), y1 - 18 - (t - lo) / span * 40) for i, t in enumerate(ts)]
+        d.line(pts, fill=R.INK, width=3)
+        for i in range(0, len(hr), 6):
+            ep, t, pop, _ = hr[i]
+            x, y = pts[i]
+            d.ellipse((x - 4, y - 4, x + 4, y + 4), fill=R.INK)
+            R.text(d, (x, y - 16), f"{t:.0f}°", R.F("cb", 20), anchor="mm")
+            R.text(d, (x, y1 - 2), time.strftime("%-I%p", time.localtime(ep)).lower(), R.F("cm", 16), anchor="mm")
+    if note:
+        R.text(d, (w - 20, y0 + 14), R.ellipsize(d, note, R.F("csb", 20), 420), R.F("csb", 20), anchor="rm")
+    _footer(d, w, h, "weather", now, "Open-Meteo")
+    return c
+
+
+def render_trip(trips, calendar, now, size):
+    w, h = size
+    c = Image.new("L", size, R.PAPER)
+    d = ImageDraw.Draw(c)
+    b = _beat(trips, calendar, now)
+    if not b:
+        R.text(d, (w / 2, h / 2), "Nothing on the calendar", R.F("cb", 40), anchor="mm")
+        _footer(d, w, h, "trip", now)
+        return c
+    kind, x = b
+    days = (time.mktime(time.localtime(x.start)[:3] + (0, 0, 0, 0, 0, -1)) -
+            time.mktime(time.localtime(now)[:3] + (0, 0, 0, 0, 0, -1))) / 86400
+    days = round(days)
+    # left: giant countdown block on ink
+    d.rectangle((0, 0, 300, h - 26), fill=R.INK)
+    if x.start <= now:
+        big, small = "NOW", "under way"
+    elif days == 0:
+        big, small = "TODAY", time.strftime("%-I:%M %p", time.localtime(x.start))
+    else:
+        big, small = str(days), "day to go" if days == 1 else "days to go"
+    R.text(d, (150, 190), big, R.F("cb", 170 if len(big) <= 2 else 96), anchor="mm", fill=R.PAPER)
+    R.text(d, (150, 310), small.upper(), R.F("cb", 34), anchor="mm", fill=R.PAPER)
+    R.text(d, (150, 380), time.strftime("%a %b %-d", time.localtime(x.start)).upper(), R.F("csb", 28), anchor="mm", fill=R.PAPER)
+    X = 330
+    if kind == "trip":
+        R.text(d, (X, 40), "TRIP", R.F("cb", 26), anchor="lm")
+        for i, ln in enumerate(R.wrap(d, x.name or "Trip", R.F("b", 46), w - X - 24, 2)):
+            R.text(d, (X, 90 + i * 52), ln, R.F("b", 46), anchor="lm")
+        y = 210
+        d.line((X, y - 20, w - 24, y - 20), fill=R.INK, width=2)
+        for s in x.segments[:4]:
+            if s.kind == "flight":
+                t = f"FLY  {s.flight_no}  {s.origin} – {s.dest}"
+            elif s.kind == "hotel":
+                t = f"STAY  {s.name or s.title}"
+            else:
+                t = s.title
+            R.text(d, (X, y), R.ellipsize(d, t, R.F("csb", 28), w - X - 140), R.F("csb", 28), anchor="lm")
+            R.text(d, (w - 24, y), time.strftime("%a %-I:%M%p", time.localtime(s.start)), R.F("cm", 24), anchor="rm")
+            y += 50
+        foot = time.strftime("%b %-d", time.localtime(x.start)) + " – " + time.strftime("%b %-d", time.localtime(x.end))
+    else:
+        R.text(d, (X, 40), "ON THE CALENDAR", R.F("cb", 26), anchor="lm")
+        for i, ln in enumerate(R.wrap(d, x.title, R.F("b", 50), w - X - 24, 3)):
+            R.text(d, (X, 100 + i * 58), ln, R.F("b", 50), anchor="lm")
+        foot = "All day" if x.all_day else time.strftime("%-I:%M %p", time.localtime(x.start))
+        if x.location:
+            R.text(d, (X, 340), R.ellipsize(d, x.location, R.F("csb", 28), w - X - 24), R.F("csb", 28), anchor="lm")
+    R.text(d, (X, h - 60), foot, R.F("cm", 26), anchor="lm")
+    _footer(d, w, h, "trip", now)
+    return c
+
+
+def render_news(data, now, size):
+    w, h = size
+    c = Image.new("L", size, R.PAPER)
+    d = ImageDraw.Draw(c)
+    items = data.get("news") or []
+    if not items:
+        R.text(d, (w / 2, h / 2), "No news photo", R.F("cb", 40), anchor="mm")
+        _footer(d, w, h, "news", now)
+        return c
+    a = items[int(now // (ROTATE_MIN * 60 * 6)) % len(items)]   # a different story each time round
+    lines = R.wrap(d, a["headline"], R.F("b", 30), w - 40, 3)
+    band = 46 + 34 * len(lines)
+    ph_h = h - 26 - band
+    c.paste(_photo(a["image"], (w, ph_h)), (0, 0))
+    _band(c, ph_h, h - 26)
+    d.line((0, ph_h, w, ph_h), fill=R.INK, width=2)
+    R.pill(d, 18, ph_h + 10, a["section"].upper(), R.F("cb", 18))
+    for i, ln in enumerate(lines):
+        R.text(d, (20, ph_h + 42 + i * 34), ln, R.F("b", 30))
+    _footer(d, w, h, "news", now, "Photo: WSJ")
     return c
 
 
@@ -381,16 +583,19 @@ def compose(ctx, size=None):
     """L image (W x H) for the current gallery mode."""
     size = size or (R.PW, R.PH)
     data = getattr(ctx, "gallery", None) or {}
-    mode = pick_mode(data, ctx.teams, ctx.now, ctx.cfg, getattr(ctx, "gallery_offset", 0))
-    if mode == "live":
-        img = render_live(data, ctx.teams, ctx.now, size)
-    elif mode == "tonight":
-        img = render_tonight(data, ctx.teams, ctx.now, size)
-    elif mode == "wire":
-        img = render_wire(data, ctx.now, size)
-    else:
-        img = render_onthisday(data, ctx.now, size)
-    return img
+    mode = pick_mode(data, ctx.teams, ctx.now, ctx.cfg, getattr(ctx, "gallery_offset", 0),
+                     ctx.weather, ctx.trips, ctx.calendar)
+    if mode == "matchup":
+        return render_matchup(data, ctx.teams, ctx.now, size)
+    if mode == "weather":
+        return render_weather(ctx.weather, ctx.now, size)
+    if mode == "trip":
+        return render_trip(ctx.trips, ctx.calendar, ctx.now, size)
+    if mode == "news":
+        return render_news(data, ctx.now, size)
+    if mode == "wire":
+        return render_wire(data, ctx.now, size)
+    return render_onthisday(data, ctx.now, size)
 
 
 def compose_gray(ctx):

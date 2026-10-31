@@ -378,6 +378,7 @@ class Board:
                 if force or g.get("day") != day or not g.get("onthisday"):
                     g["onthisday"], g["day"] = gallery.fetch_onthisday(), day
                 g["wire"] = gallery.fetch_wire(S.TEAMS, cfg.get("teams") or [])
+                g["news"] = gallery.fetch_news(tuple(cfg.get("feeds") or ("world", "us"))[:2])
                 self.snap["gallery"] = g
         elif name == "shabbat":
             self.snap["shabbat"] = S.shabbat(cfg, force)
@@ -528,6 +529,14 @@ class Board:
                 if self.beats.get("flight") != fb:
                     due.append("trips")
                     self.beats["flight"] = fb
+        if R.layout_of(cfg) == "gallery" and self.page == "quad":   # E1001 screensaver: next category
+            import gallery
+            gb = int(now // (gallery.rotate_min(cfg) * 60))
+            if self.beats.get("gallery_rot") != gb:
+                self.beats["gallery_rot"] = gb
+                if not due:
+                    with self.cond:
+                        self.redraw("gallery rotate", major=True)
         if "sky" in due:
             self.beats["sky"] = int(now // (max(1, cfg["sky_min"]) * 60))
         if not due:
@@ -679,6 +688,9 @@ class Board:
         """Touch (E1003). Home: tap a slot to open its page. Detail page: any tap goes home."""
         with self.cond:
             self.unread = False
+            if self.note is None and self.page == "quad" and R.layout_of(cfg) == "gallery":
+                self.gallery_offset += 1                   # E1001 gallery: tap = skip to next category
+                return self.redraw(f"gallery tap {self.gallery_offset}", major=True)
             if self.note is not None or self.page != "quad":
                 self.note = None
                 self.page = "quad"
