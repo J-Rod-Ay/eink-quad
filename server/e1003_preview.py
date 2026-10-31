@@ -15,7 +15,7 @@ CUSTOM = {"devils": ("Devils", "hockey", "nhl", "nj"), "jets": ("Jets", "footbal
           "rutgers_fb": ("Rutgers", "football", "college-football", "164"),
           "rutgers_bb": ("Rutgers Hoops", "basketball", "mens-college-basketball", "164")}
 S.TEAMS.update(CUSTOM)
-CFG = {"lat": LAT, "lon": LON, "feeds": ["world", "us", "markets"], "tickers": ["^GSPC", "^DJI", "^IXIC", "BTC-USD"],
+CFG = {"lat": LAT, "lon": LON, "feeds": ["world", "us", "markets"], "tickers": ["^GSPC", "^DJI", "^IXIC", "SOXL"],
        "teams": list(CUSTOM), "radar_nm": 25,
        "layout": "thirds", "slots": ["shabbat", "newsletter", "weather", "news", "trips", "sports", "scoreboard"]}
 now = time.time()
@@ -66,10 +66,20 @@ ctx = R.Ctx(now=now, cfg=CFG, weather=wx, heads=heads, quotes=qs, teams=teams, f
             recent=[], day_count=12, shabbat=sh, calendar=cal, trips=[trip], shopping=shop,
             brief="E1003 home: left Shabbat + newsletter, middle weather/markets/trips, right sports.",
             indoor_f=70.5, indoor_rh=44, battery=86, updated=now, shul=shul)
+if os.environ.get("GAMEDAY"):    # force a live fixture: Devils + Nets on now
+    from dataclasses import replace as _rp
+    live = {"devils": ("NYR", "Rangers", True, "2nd 8:41", 2, 1, "MSG"), "nets": ("BOS", "Celtics", False, "3rd 4:12", 78, 81, "YES")}
+    for r in teams:
+        if r.key in live:
+            o, on, hm_, det, us, th, tv = live[r.key]
+            r.live = S.Game(team=r.label, abbr=r.key[:3].upper(), opp=o, opp_name=on, home=hm_, start=now - 5400,
+                            state="in", detail=det, us=us, them=th, tv=tv, record=r.record)
+    ctx.teams = teams
+print("game day:", R.game_day(ctx))
 g = R.compose_gray(ctx)
 assert g.size == (1872, 1404), g.size
 g.save(out)
 ctx.page = "newsletter"
 R.compose_gray(ctx).save(out.replace(".png", "-detail.png"))
 R.compose(ctx).save(out.replace(".png", "-1bit.png"))
-print("wrote", out, g.size, "slots:", R.resolve_slots(ctx))
+print("wrote", out, g.size, "slots:", R.home_layout(ctx)[1])

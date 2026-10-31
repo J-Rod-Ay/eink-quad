@@ -1807,8 +1807,39 @@ def layout_of(cfg) -> str:
     return lay if lay in LAYOUTS else DEFAULT_LAYOUT
 
 
+GAMEDAY_SLOTS = ["shabbat", "weather", "news", "sports", "scoreboard"]
+
+
+def game_day(ctx) -> bool:
+    """Any followed team live right now (ctx.teams is already the followed list).
+    Opt out with cfg gameday_takeover: false."""
+    return bool(ctx.cfg.get("gameday_takeover", True)) and any(getattr(r, "live", None) for r in (ctx.teams or []))
+
+
+def home_layout(ctx):
+    """(boxes, slot names) for the home screen. Thirds + a live game => game-day takeover."""
+    layout = layout_of(ctx.cfg)
+    if layout == "thirds" and game_day(ctx):
+        return slot_boxes("thirds_live"), list(GAMEDAY_SLOTS)
+    return slot_boxes(layout), resolve_slots(ctx)
+
+
 def slot_boxes(layout="quad"):
     """Slot rectangles in layout units."""
+    if layout == "thirds_live":
+        # Game-day takeover (Zev): scores own the middle+right 2/3 of the screen.
+        # Left column stays compact: Shabbat / weather / markets, a third each.
+        # Newsletter + trips step aside until nothing is live, then thirds returns.
+        xs = [0, W // 3, W]
+        ch = (H - GRID_Y) // 3
+        ys = [GRID_Y, GRID_Y + ch, GRID_Y + 2 * ch, H]
+        return [
+            (xs[0], ys[0], xs[1], ys[1]),  # shabbat
+            (xs[0], ys[1], xs[1], ys[2]),  # weather
+            (xs[0], ys[2], xs[1], ys[3]),  # markets/news
+            (xs[1], ys[0], xs[2], ys[2]),  # sports: live games, 2/3 x 2/3
+            (xs[1], ys[2], xs[2], ys[3]),  # scoreboard: finals / upcoming
+        ]
     if layout == "thirds":
         # Left column: Shabbat SHORT on top (rows 0-1 = 1/3 body height; times are compact)
         # + newsletter TALL below (rows 1-3 = 2/3 body height, reading room).
@@ -1901,9 +1932,8 @@ def compose_quad(ctx: Ctx, panels: dict | None = None) -> Image.Image:
     c = Image.new("L", (PW, PH), PAPER)
     c.paste(header(ctx), (0, 0))
     c.paste(strip(ctx), (0, px(HEAD_H)))
-    layout = layout_of(ctx.cfg)
-    boxes = slot_boxes(layout)
-    for name, box in zip(resolve_slots(ctx), boxes):
+    boxes, names = home_layout(ctx)
+    for name, box in zip(names, boxes):
         size = (box[2] - box[0], box[3] - box[1])
         img = (panels or {}).get(name) if size == (CELL_W, CELL_H) else None
         if img is None:

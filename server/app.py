@@ -670,8 +670,7 @@ class Board:
                 return self.redraw("home (tap)", major=True)
             k = R.K or 1.0
             ux, uy = tx / k, ty / k
-            boxes = R.slot_boxes(R.layout_of(cfg))
-            names = R.resolve_slots(self.ctx())
+            boxes, names = R.home_layout(self.ctx())   # follows the game-day takeover
             hit = None
             for (x0, y0, x1, y1), name in zip(boxes, names):
                 if x0 <= ux < x1 and y0 <= uy < y1:
