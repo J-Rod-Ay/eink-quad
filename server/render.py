@@ -751,7 +751,7 @@ def _sports_live_first(ctx, c, d, size, live, teams):
     fin = sorted((r for r in rest if r.last), key=lambda r: -r.last.start)
     up = sorted((r for r in rest if r.next), key=lambda r: r.next.start)
     shown = live[:3]
-    live_h = int(h * (0.55 if len(shown) == 1 else 0.68))
+    live_h = h   # live owns the whole tile: top, middle, bottom
     bh = live_h / len(shown)
     y = 0
     for i, r in enumerate(shown):
@@ -762,14 +762,14 @@ def _sports_live_first(ctx, c, d, size, live, teams):
         sides = [(g.opp_logo, g.opp_name, g.them), (g.our_logo or r.logo, r.label, g.us)]
         if not g.home:
             sides.reverse()
-        ls = int(min(64, (bh - 70) / 2))
-        sf = F("b", int(ls * 0.95))
-        yy = y0 + 36
+        ls = int(min(96, (bh - 80) / 2))
+        sf = F("b", int(ls * 0.85))
+        yy = int(y0 + 36 + max(0, (bh - 36 - 2 * (ls + 8) - 30) / 2))
         for logo, name, sc in sides:
             if not paste_logo(c, logo, 12, yy, ls, ctx.cfg):
                 d.rectangle((12, yy, 12 + ls, yy + ls), outline=INK, width=2)
             scs = "0" if sc is None else str(sc)
-            text(d, (ls + 24, yy + ls / 2), ellipsize(d, name, F("sb", 24), w - ls - 40 - tw(d, scs, sf)), F("sb", 24), anchor="lm")
+            text(d, (ls + 24, yy + ls / 2), ellipsize(d, name, F("sb", 30 if ls > 80 else 24), w - ls - 40 - tw(d, scs, sf)), F("sb", 24), anchor="lm")
             text(d, (w - 12, yy + ls / 2), scs, sf, anchor="rm")
             yy += ls + 8
         foot = " · ".join(x for x in ((_sit_line(g) or ""), g.tv) if x)
@@ -777,6 +777,8 @@ def _sports_live_first(ctx, c, d, size, live, teams):
             text(d, (12, yy + 2), ellipsize(d, foot, F("cm", 16), w - 24), F("cm", 16))
         y += bh
         d.line((10, int(y) - 2, w - 10, int(y) - 2), fill=INK, width=2 if i == len(shown) - 1 else 1)
+    if live:
+        return c   # finals/upcoming move to the scoreboard tile while games are on
     y += 4
     rem = len(fin[:3]) + len(up) + 2
     lh = max(24, min(30, (h - y - 52) / max(1, rem)))
@@ -1364,11 +1366,48 @@ def _score_block(c, d, ctx, row, g, box, big=True):
             text(d, (cx, sy + 2 + i * 19), ln, F("m", 16), anchor="ma")
 
 
+def _board_after_live(ctx, c, d, size, extra):
+    """Sports tile is showing the live games; this corner takes the rest:
+    any live overflow, then FINALS, then UPCOMING at the bottom."""
+    w, h = size
+    y = 6
+    rest = [r for r in ctx.teams if not r.live]
+    fin = sorted((r for r in rest if r.last), key=lambda r: -r.last.start)
+    up = sorted((r for r in rest if r.next), key=lambda r: r.next.start)
+    groups = [("LIVE", extra), ("FINALS", fin), ("UPCOMING", up)]
+    n_up = min(len(up), 3)
+    for label, group in groups:
+        if not group:
+            continue
+        if y + 50 > h:
+            break
+        text(d, (12, y), label, F("cb", 20))
+        d.line((10, y + 26, w - 10, y + 26), fill=INK, width=2)
+        y += 32
+        for r in group:
+            # keep room for upcoming at the bottom
+            reserve = (32 + 26 * n_up) if label == "FINALS" and up else 0
+            if y + 26 + reserve > h:
+                break
+            if label == "LIVE":
+                g = r.live; t = f"{r.label} {_gsc(g)} {'vs' if g.home else 'at'} {g.opp} · {g.detail}"
+            elif label == "FINALS":
+                g = r.last; t = f"{r.label} {g.result} {_gsc(g)} {'vs' if g.home else 'at'} {g.opp} · {time.strftime('%a', time.localtime(g.start))}"
+            else:
+                g = r.next; t = f"{r.label} {'vs' if g.home else 'at'} {g.opp} · {when(g.start, g.time_tbd)}"
+            text(d, (12, y), ellipsize(d, t, F("sb", 19), w - 24), F("sb", 19))
+            y += 26
+        y += 6
+    return c
+
+
 def panel_scoreboard(ctx: Ctx, size):
     """Corner version: the live game (or last final) as a two-line board, then what's next."""
     c, d = canvas(size)
     w, h = size
     live = _live_rows(ctx.teams)
+    if live and "sports" in (ctx.cfg.get("slots") or []):
+        return _board_after_live(ctx, c, d, size, live[3:])
     if live:
         # Devils pinned on top when live; others rotate under it
         r = live[0] if live[0].key in LIVE_FIRST else live[ctx.cycle % len(live)]
