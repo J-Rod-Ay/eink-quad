@@ -462,6 +462,7 @@ class Ctx:
     gallery: dict = field(default_factory=dict)    # gallery.py data: {"onthisday": {...}, "wire": [...]}
     gallery_offset: int = 0       # button steps through gallery modes
     league: list = field(default_factory=list)     # sources.SlateGame: whole NFL scoreboard on slate days
+    team_news: dict = field(default_factory=dict)  # {team key: [(epoch, headline)]} for followed-event panels (Navy)
 
 
 def _deg(v):
@@ -615,7 +616,15 @@ def panel_news(ctx: Ctx, size):
     c, d = canvas(size)
     w, h = size
     y = 6
-    qs = ctx.quotes[:6 if w >= 300 else 3]
+    shab = is_shabbat_day(ctx.now)
+    qs = [] if shab else ctx.quotes[:6 if w >= 300 else 3]   # markets never on Fri-Sat
+    if shab:   # no TV on Shabbat: a clearly labelled headline board, refreshed hourly
+        text(d, (12, 6), "NEWS", F("cb", 22))
+        newest = max((hd.published for hd in ctx.heads), default=0)
+        sub = "updates hourly" + (f" · latest {hm(newest)}" if newest else "")
+        text(d, (w - 12, 9), sub, F("csb", 16), anchor="ra")
+        d.line((10, 36, w - 10, 36), fill=INK, width=2)
+        y = 44
     if qs:
         cw = w / len(qs)
         for i, q in enumerate(qs):
@@ -626,8 +635,8 @@ def panel_news(ctx: Ctx, size):
         d.line((8, y, w - 8, y), fill=INK, width=2)
         y += 7
     heads = ctx.heads
-    f = F("m", 17)
-    lh = 19
+    f = F("m", 20 if shab else 17)
+    lh = 23 if shab else 19
     if not heads:
         text(d, (w / 2, (y + h) / 2), "No headlines", F("m", 17), anchor="mm")
         return c
@@ -645,7 +654,8 @@ def panel_news(ctx: Ctx, size):
     if cur:
         pages.append(cur)
     pages = pages[:ctx.cfg.get("news_pages", 4)]
-    pg = pages[ctx.cycle % len(pages)]
+    pi = (int(ctx.now // 3600) if shab else ctx.cycle) % len(pages)   # Shabbat: one page per hour
+    pg = pages[pi]
     for lines in pg:
         d.rectangle((12, y + 7, 18, y + 13), fill=INK)
         for ln in lines:
@@ -653,14 +663,14 @@ def panel_news(ctx: Ctx, size):
             y += lh
         y += 5
     # page dots
-    if len(pages) > 1 and not qs:
+    if len(pages) > 1 and not qs and not shab:
         cx = w - 12 - (len(pages) - 1) * 10
         dy = 63 if qs else 6
         d.rectangle((cx - 8, dy - 5, w - 4, dy + 5), fill=PAPER)
         for i in range(len(pages)):
             r = 3
             box = (cx + i * 10 - r, dy - r, cx + i * 10 + r, dy + r)
-            if i == ctx.cycle % len(pages):
+            if i == pi:
                 d.ellipse(box, fill=INK)
             else:
                 d.ellipse(box, outline=INK)
@@ -760,24 +770,30 @@ def _sports_live_first(ctx, c, d, size, live, teams):
     for i, r in enumerate(shown):
         g = r.live
         y0 = int(y)
-        pill(d, 10, y0 + 6, "LIVE", F("csb", 16), h=22)
-        text(d, (w - 12, y0 + 6), ellipsize(d, g.detail, F("csb", 20), w - 100), F("csb", 20), anchor="ra")
+        # bigger type, not padding: logos/scores/names scale with the band the game gets
+        hf = int(max(20, min(30, bh / 9)))
+        pill(d, 10, y0 + 6, "LIVE", F("csb", hf - 2), h=hf + 4)
+        text(d, (w - 12, y0 + 5), ellipsize(d, g.detail, F("cb", hf + 2), w - 100), F("cb", hf + 2), anchor="ra")
         sides = [(g.opp_logo, g.opp_name, g.them), (g.our_logo or r.logo, r.label, g.us)]
         if not g.home:
             sides.reverse()
-        ls = int(min(96, (bh - 80) / 2))
-        sf = F("b", int(ls * 0.85))
-        yy = int(y0 + 36 + max(0, (bh - 36 - 2 * (ls + 8) - 30) / 2))
+        top = hf + 16
+        foot_h = int(hf * 1.1)
+        ls = int(max(28, min(170, (bh - top - foot_h - 16) / 2 - 6)))
+        sf = F("b", int(ls * 0.95))
+        nf = F("sb", int(max(22, min(46, ls * 0.42))))
+        yy = int(y0 + top + max(0, (bh - top - 2 * (ls + 8) - foot_h) / 2))
         for logo, name, sc in sides:
             if not paste_logo(c, logo, 12, yy, ls, ctx.cfg):
                 d.rectangle((12, yy, 12 + ls, yy + ls), outline=INK, width=2)
             scs = "0" if sc is None else str(sc)
-            text(d, (ls + 24, yy + ls / 2), ellipsize(d, name, F("sb", 30 if ls > 80 else 24), w - ls - 40 - tw(d, scs, sf)), F("sb", 24), anchor="lm")
+            text(d, (ls + 24, yy + ls / 2), ellipsize(d, name, nf, w - ls - 48 - tw(d, scs, sf)), nf, anchor="lm")
             text(d, (w - 12, yy + ls / 2), scs, sf, anchor="rm")
             yy += ls + 8
         foot = " · ".join(x for x in ((_sit_line(g) or ""), g.tv) if x)
-        if foot and yy + 20 < y0 + bh:
-            text(d, (12, yy + 2), ellipsize(d, foot, F("cm", 16), w - 24), F("cm", 16))
+        ff = F("csb", int(hf * 0.85))
+        if foot and yy + hf < y0 + bh:
+            text(d, (12, yy + 2), ellipsize(d, foot, ff, w - 24), ff)
         y += bh
         d.line((10, int(y) - 2, w - 10, int(y) - 2), fill=INK, width=2 if i == len(shown) - 1 else 1)
     if live:
@@ -1715,18 +1731,20 @@ def panel_league(ctx: Ctx, size):
     games = list(ctx.league or [])
     nlive = sum(g.state == "in" for g in games)
     nfin = sum(g.state == "post" for g in games)
-    text(d, (10, 4), "NFL SCOREBOARD", F("cb", 18))
-    text(d, (w - 10, 4), f"{nlive} live · {nfin} final · {len(games) - nlive - nfin} to play", F("csb", 16), anchor="ra")
-    d.line((6, 26, w - 6, 26), fill=INK, width=2)
+    text(d, (10, 3), "NFL SCOREBOARD", F("cb", 22))
+    text(d, (w - 10, 5), f"{nlive} live · {nfin} final · {len(games) - nlive - nfin} to play", F("csb", 19), anchor="ra")
+    d.line((6, 30, w - 6, 30), fill=INK, width=2)
     if not games:
         text(d, (w // 2, h // 2), "No NFL games on the board", F("csb", 20), anchor="mm")
         return c
     cols = 4 if len(games) <= 12 else 5
     rows = max(1, min(3 if cols == 5 else 4, (len(games) + cols - 1) // cols))
     games = games[:cols * rows]
-    cw, top = w / cols, 30
+    cw, top = w / cols, 34
     rh = (h - top) / rows
-    fs = 24 if rh >= 80 else 21
+    line_h0 = (rh - 26) / 2
+    fs = int(max(21, min(48, line_h0 * 0.82, cw / 4.2)))   # fill the cell: bigger type, not padding
+    sfs = int(max(15, min(24, rh / 6)))
     for i, g in enumerate(games):
         x0, y0 = int((i % cols) * cw), int(top + (i // cols) * rh)
         x1 = int(x0 + cw)
@@ -1737,7 +1755,7 @@ def panel_league(ctx: Ctx, size):
             fg = PAPER
         if i % cols:
             d.line((x0, y0 + 6, x0, int(y0 + rh) - 6), fill=INK, width=1)
-        line_h = (rh - 22) / 2
+        line_h = (rh - sfs - 8) / 2
         for j, (ab, scr, oth) in enumerate(((g.away, g.away_score, g.home_score), (g.home, g.home_score, g.away_score))):
             y = y0 + 4 + j * line_h
             win = g.state == "post" and scr is not None and oth is not None and scr > oth
@@ -1748,22 +1766,75 @@ def panel_league(ctx: Ctx, size):
         st = g.detail
         if g.state == "pre":
             st = time.strftime("%a %-I:%M", time.localtime(g.start)) + (f" {g.tv}" if g.tv else "")
-        y = int(y0 + rh) - 20
+        y = int(y0 + rh) - sfs - 6
         if g.state == "in" and not ours:
-            pill(d, x0 + 10, y - 1, "LIVE", F("csb", 13), h=17)
-            text(d, (x1 - 12, y), ellipsize(d, st, F("csb", 15), cw - 70), F("csb", 15), fill=fg, anchor="ra")
+            pill(d, x0 + 10, y - 1, "LIVE", F("csb", sfs - 2), h=sfs + 3)
+            text(d, (x1 - 12, y), ellipsize(d, st, F("csb", sfs), cw - 80), F("csb", sfs), fill=fg, anchor="ra")
         else:
-            text(d, (x0 + 12, y), ellipsize(d, st, F("cm", 15), cw - 24), F("cm", 15), fill=fg)
+            text(d, (x0 + 12, y), ellipsize(d, st, F("cm", sfs), cw - 24), F("cm", sfs), fill=fg)
         if (i // cols) < rows - 1:
             d.line((x0 + 8, int(y0 + rh), x1 - 8, int(y0 + rh)), fill=INK, width=1)
     return c
 
 
-PANELS = {"league": panel_league, "weather": panel_weather, "news": panel_news, "sports": panel_sports, "sky": panel_sky,
+FOLLOW_EVENT = {"navy_fb": "2426"}   # Saturday exception: Navy football keeps news + highlights on Shabbat
+
+
+def navy_row(ctx):
+    """The followed Navy football row if it is live (by team key or ESPN id 2426)."""
+    import sources
+    for r in ctx.teams or []:
+        tid = sources.TEAMS.get(r.key, ("", "", "", ""))[3] if r.key in sources.TEAMS else ""
+        if r.live and (r.key in FOLLOW_EVENT or tid in FOLLOW_EVENT.values()):
+            return r
+    return None
+
+
+def panel_navy(ctx: Ctx, size):
+    """Navy on Shabbat: game highlights (situation, last play, recent scoring) + Navy news."""
+    c, d = canvas(size)
+    w, h = size
+    r = navy_row(ctx)
+    text(d, (12, 6), "NAVY · HIGHLIGHTS & NEWS", F("cb", 22))
+    d.line((10, 36, w - 10, 36), fill=INK, width=2)
+    y = 44
+    if r is None:
+        text(d, (12, y), "Navy not playing", F("sb", 19))
+        return c
+    g = r.live
+    f, fb = F("m", 19), F("sb", 21)
+    text(d, (12, y), ellipsize(d, f"{r.label} {_gsc(g)} {'vs' if g.home else 'at'} {g.opp_name} · {g.detail}", fb, w - 24), fb)
+    y += 28
+    hl = [x for x in ((_sit_line(g) or ""), (g.situation or {}).get("lastPlay") or "", g.note or "") if x]
+    for x in hl:
+        for ln in wrap(d, x, f, w - 34, 2):
+            if y + 22 > h:
+                return c
+            text(d, (28, y), ln, f)
+            y += 22
+        y += 3
+    news = [hd for _, hd in (ctx.team_news or {}).get(r.key, [])] or ([r.news] if getattr(r, "news", "") else [])
+    if news and y + 30 + 22 * len(wrap(d, news[0], f, w - 34, 2)) <= h:
+        y += 4
+        text(d, (12, y), "NAVY NEWS", F("cb", 18))
+        y += 26
+        for hd in news:
+            lines = wrap(d, hd, f, w - 34, 2)
+            if y + 22 * len(lines) > h:
+                break
+            d.rectangle((12, y + 8, 18, y + 14), fill=INK)
+            for ln in lines:
+                text(d, (28, y), ln, f)
+                y += 22
+            y += 4
+    return c
+
+
+PANELS = {"league": panel_league, "navy": panel_navy, "weather": panel_weather, "news": panel_news, "sports": panel_sports, "sky": panel_sky,
           "shabbat": panel_shabbat, "calendar": panel_calendar, "trips": panel_trips,
           "scoreboard": panel_scoreboard, "shopping": panel_shopping,
           "newsletter": panel_newsletter}
-CORNER_PANELS = [p for p in PANELS if p != "league"]          # shopping last, so short slot lists never pick it by default
+CORNER_PANELS = [p for p in PANELS if p not in ("league", "navy")]          # shopping last, so short slot lists never pick it by default
 
 
 # ================================================================== chrome
@@ -1800,6 +1871,17 @@ def header(ctx: Ctx):
         text(d, (x, HEAD_H / 2), sep, f, fill=PAPER, anchor="lm")
         s = f"Inside {ctx.indoor_f:.0f}°" + (f" {ctx.indoor_rh:.0f}%" if ctx.indoor_rh is not None else "")
         text(d, (x, HEAD_H / 2), s, f, fill=PAPER, anchor="rm")
+    # Candles / Havdalah in the header on screens without the full Shabbat panel
+    sh = ctx.shabbat
+    if sh is not None and ctx.page == "quad" and not home_mode(ctx).startswith("shabbat"):
+        bits = [f"{lab} {_sday(ts).split()[0]} {hm(ts)}" for lab, ts in
+                (("Candles", getattr(sh, "candles", None)), ("Havdalah", getattr(sh, "havdalah", None))) if ts]
+        if bits:
+            x0 = 14 + tw(d, date, F("sb", 22)) + 28 + (150 if ctx.notes_new else 0)
+            if ctx.indoor_f is not None:
+                x -= tw(d, f"Inside {ctx.indoor_f:.0f}° {ctx.indoor_rh or 0:.0f}%", F("m", 17))
+            cf = F("sb", 20)
+            text(d, (x0, HEAD_H / 2), ellipsize(d, "  ·  ".join(bits), cf, x - x0 - 16), cf, fill=PAPER, anchor="lm")
     if ctx.notes_new:
         f = F("csb", 17)
         s = f"{ctx.notes_new} new note{'s' if ctx.notes_new > 1 else ''}"
@@ -1866,6 +1948,11 @@ NFL_DAYS = (6, 0, 3)          # tm_wday: Sun, Mon, Thu
 SHABBAT_DAYS = (4, 5)         # Fri (day before) + Sat
 
 
+def is_shabbat_day(now) -> bool:
+    """Fri or Sat, New York time (box/server TZ is America/New_York)."""
+    return time.localtime(now).tm_wday in SHABBAT_DAYS
+
+
 def nfl_day(now) -> bool:
     return time.localtime(now).tm_wday in NFL_DAYS
 
@@ -1886,18 +1973,20 @@ def nfl_slate_on(ctx) -> bool:
 
 
 def home_mode(ctx) -> str:
-    """Zev's layout matrix (thirds/E1003 only):
-       shabbat       Fri-Sat, nothing live        standard thirds (Shabbat + newsletter)
+    """Zev's layout matrix (thirds/E1003 only). Markets NEVER on Fri-Sat or in a game mode.
+       shabbat       Fri-Sat, nothing live        Shabbat | weather top; big newsletter 2/3 x 2/3; hourly news + my teams right
        shabbat_live  Fri-Sat, followed team live  Shabbat/weather/newsletter column | scores 2/3
+       shabbat_navy  Sat, Navy football live      as shabbat_live, but Navy highlights + hourly news stay on
        nfl           Sun/Mon/Thu slate active     weather + my teams on top, whole-league board below
        live          other days, team live        weather + my finals column | live games 2/3
        weekday       otherwise                    weather/markets/trips column | my teams 2/3
-    Markets never appear in a game mode."""
+    Non-Shabbat modes carry candle lighting / Havdalah in the header."""
     if layout_of(ctx.cfg) != "thirds" or not ctx.cfg.get("smart_home", True):
         return "fixed"
-    shab = time.localtime(ctx.now).tm_wday in SHABBAT_DAYS
     live = game_day(ctx)
-    if shab:
+    if is_shabbat_day(ctx.now):
+        if live and time.localtime(ctx.now).tm_wday == 5 and navy_row(ctx) is not None:
+            return "shabbat_navy"
         return "shabbat_live" if live else "shabbat"
     if nfl_slate_on(ctx):
         return "nfl"
@@ -1905,7 +1994,9 @@ def home_mode(ctx) -> str:
 
 
 MODE_SLOTS = {
+    "shabbat": ["shabbat", "weather", "newsletter", "news", "sports"],
     "shabbat_live": ["shabbat", "weather", "newsletter", "sports", "scoreboard"],
+    "shabbat_navy": ["shabbat", "weather", "newsletter", "sports", "navy", "news"],
     "nfl": ["weather", "sports", "league"],
     "live": ["weather", "scoreboard", "sports"],
     "weekday": ["weather", "news", "trips", "sports", "scoreboard"],
@@ -1929,6 +2020,10 @@ def slot_boxes(layout="quad"):
         m = layout[7:]
         if m == "shabbat_live":   # left: shabbat / weather / newsletter; scores own 2/3
             return [(0, GRID_Y, x1, y1), (0, y1, x1, y2), (0, y2, x1, H), (x1, GRID_Y, W, y2), (x1, y2, W, H)]
+        if m == "shabbat":        # top: shabbat | weather; newsletter 2/3 wide x 2/3 tall; right: news tall + my teams
+            return [(0, GRID_Y, x1, y1), (x1, GRID_Y, x2, y1), (0, y1, x2, H), (x2, GRID_Y, W, y2), (x2, y2, W, H)]
+        if m == "shabbat_navy":   # left column as shabbat_live; live scores top 2/3; Navy highlights + news below
+            return [(0, GRID_Y, x1, y1), (0, y1, x1, y2), (0, y2, x1, H), (x1, GRID_Y, W, y2), (x1, y2, x2, H), (x2, y2, W, H)]
         if m == "weekday":        # left: weather / markets+news / trips; my teams 2/3
             return [(0, GRID_Y, x1, y1), (0, y1, x1, y2), (0, y2, x1, H), (x1, GRID_Y, W, y2), (x1, y2, W, H)]
         if m == "live":           # left: weather + my finals/upcoming; live games full height 2/3

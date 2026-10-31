@@ -259,6 +259,8 @@ def headlines(cfg, force=False) -> list[Headline]:
         if key not in WSJ_FEEDS:
             continue
         c = _feeds.setdefault(key, Cached(900))
+        # Fri-Sat (NY): no TV news on Shabbat, so the home news panel is an hourly digest
+        c.ttl = 3600 if time.localtime().tm_wday in (4, 5) else 900
 
         def fetch(key=key):
             return _fetch_feed(key)

@@ -66,17 +66,23 @@ import shul as SHUL  # noqa: E402
 shul = SHUL.load()
 ctx = R.Ctx(now=now, cfg=CFG, weather=wx, heads=heads, quotes=qs, teams=teams, featured=fl, nearby=nearby,
             recent=[], day_count=12, shabbat=sh, calendar=cal, trips=[trip], shopping=shop,
-            brief="E1003 home: left Shabbat + newsletter, middle weather/markets/trips, right sports.",
+            brief="",   # strip falls back to next-up / top headline
             indoor_f=70.5, indoor_rh=44, battery=86, updated=now, shul=shul)
 from dataclasses import replace as _rp
 LIVE = {"devils": ("NYR", "Rangers", True, "2nd 8:41", 2, 1, "MSG"), "nets": ("BOS", "Celtics", False, "3rd 4:12", 78, 81, "YES"),
-        "jets": ("LV", "Raiders", True, "Q3 6:02", 17, 13, "CBS")}
+        "jets": ("LV", "Raiders", True, "Q3 6:02", 17, 13, "CBS"),
+        "navy_fb": ("AF", "Air Force", True, "3rd 7:48", 21, 14, "CBS")}
 for k in (os.environ.get("GAMEDAY") or "").split(","):   # GAMEDAY=devils,nets fakes those teams live
     for r in teams:
         if r.key == k and k in LIVE:
             o, on, hm_, det, us, th, tv = LIVE[k]
             r.live = S.Game(team=r.label, abbr=k[:3].upper(), opp=o, opp_name=on, home=hm_, start=now - 5400,
                             state="in", detail=det, us=us, them=th, tv=tv, record=r.record)
+            if k == "navy_fb":
+                r.live.situation = {"downDistanceText": "2nd & 6 at AF 34",
+                                    "lastPlay": "Blake Horvath 41-yd TD run on the triple option; Navy leads 21-14"}
+                r.live.note = "Commander-in-Chief's Trophy"
+                ctx.team_news = {"navy_fb": tryit(lambda: S.team_news("navy_fb"), [])}
 if R.nfl_day(now):
     sl = tryit(lambda: S.league_slate(), [])
     if os.environ.get("NFL_FAKE"):   # mid-slate Sunday: 1pm games live, early finals, late games to play

@@ -347,6 +347,14 @@ class Board:
                     urls += [g.opp_logo for g in (r.live, r.last, r.next) if g]
                 logos.prefetch(urls)
             self.snap["teams"], self.snap["live"] = teams, live
+            tn = {}
+            for r in teams:   # Navy on Shabbat keeps its news + highlights (render.FOLLOW_EVENT)
+                if r.live and r.key in R.FOLLOW_EVENT:
+                    try:
+                        tn[r.key] = S.team_news(r.key, force)
+                    except Exception as e:
+                        print("team_news:", r.key, e, flush=True)
+            self.snap["team_news"] = tn
             if R.nfl_day(time.time()) and cfg.get("league_slate", True):   # Sun/Mon/Thu: whole NFL slate
                 try:
                     sl = S.league_slate(live=any(g.state == "in" for g in self.snap.get("league") or []), force=force)
@@ -408,7 +416,7 @@ class Board:
         if t_f is not None and cfg.get("units") != "C":
             t_f = t_f * 9 / 5 + 32
         return R.Ctx(now=now, cfg=cfg, weather=sn.get("weather"), heads=sn.get("heads") or [],
-                     quotes=sn.get("quotes") or [], teams=sn.get("teams") or [], league=sn.get("league") or [], featured=sn.get("featured"),
+                     quotes=sn.get("quotes") or [], teams=sn.get("teams") or [], league=sn.get("league") or [], team_news=sn.get("team_news") or {}, featured=sn.get("featured"),
                      recent=sn.get("recent") or [], day_count=sn.get("day_count", 0), nearby=sn.get("nearby") or [],
                      event=sn.get("event"), upcoming=sn.get("upcoming") or [], shabbat=sn.get("shabbat"), shul=sn.get("shul"),
                      calendar=sn.get("calendar"), trips=sn.get("trips"), live=sn.get("live_flight"),
