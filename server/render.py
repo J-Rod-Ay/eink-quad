@@ -744,6 +744,63 @@ def _team_lines(r, cfg=None):
     return None, "No games scheduled", ""
 
 
+def _sports_live_first(ctx, c, d, size, live, teams):
+    """Zev's order: LIVE takes the majority of the tile, then finals, then upcoming."""
+    w, h = size
+    rest = [r for r in teams if not r.live]
+    fin = sorted((r for r in rest if r.last), key=lambda r: -r.last.start)
+    up = sorted((r for r in rest if r.next), key=lambda r: r.next.start)
+    shown = live[:3]
+    live_h = int(h * (0.55 if len(shown) == 1 else 0.68))
+    bh = live_h / len(shown)
+    y = 0
+    for i, r in enumerate(shown):
+        g = r.live
+        y0 = int(y)
+        pill(d, 10, y0 + 6, "LIVE", F("csb", 16), h=22)
+        text(d, (w - 12, y0 + 6), ellipsize(d, g.detail, F("csb", 20), w - 100), F("csb", 20), anchor="ra")
+        sides = [(g.opp_logo, g.opp_name, g.them), (g.our_logo or r.logo, r.label, g.us)]
+        if not g.home:
+            sides.reverse()
+        ls = int(min(64, (bh - 70) / 2))
+        sf = F("b", int(ls * 0.95))
+        yy = y0 + 36
+        for logo, name, sc in sides:
+            if not paste_logo(c, logo, 12, yy, ls, ctx.cfg):
+                d.rectangle((12, yy, 12 + ls, yy + ls), outline=INK, width=2)
+            scs = "0" if sc is None else str(sc)
+            text(d, (ls + 24, yy + ls / 2), ellipsize(d, name, F("sb", 24), w - ls - 40 - tw(d, scs, sf)), F("sb", 24), anchor="lm")
+            text(d, (w - 12, yy + ls / 2), scs, sf, anchor="rm")
+            yy += ls + 8
+        foot = " · ".join(x for x in ((_sit_line(g) or ""), g.tv) if x)
+        if foot and yy + 20 < y0 + bh:
+            text(d, (12, yy + 2), ellipsize(d, foot, F("cm", 16), w - 24), F("cm", 16))
+        y += bh
+        d.line((10, int(y) - 2, w - 10, int(y) - 2), fill=INK, width=2 if i == len(shown) - 1 else 1)
+    y += 4
+    rem = len(fin[:3]) + len(up) + 2
+    lh = max(24, min(30, (h - y - 52) / max(1, rem)))
+    fin = fin[:3]   # leave room for upcoming
+    for label, group in (("FINALS", fin), ("UPCOMING", up)):
+        if not group or y + lh * 2 > h:
+            continue
+        text(d, (12, y), label, F("cb", 17))
+        y += 24
+        for r in group:
+            if y + lh > h:
+                break
+            if label == "FINALS":
+                g = r.last
+                s = f"{r.label}  {g.result} {_gsc(g)} {'vs' if g.home else 'at'} {g.opp} · {time.strftime('%a', time.localtime(g.start))}"
+            else:
+                g = r.next
+                s = f"{r.label}  {'vs' if g.home else 'at'} {g.opp} · {when(g.start, g.time_tbd)}"
+            text(d, (12, y), ellipsize(d, s, F("sb", 19), w - 24), F("sb", 19))
+            y += lh
+        y += 6
+    return c
+
+
 def panel_sports(ctx: Ctx, size, rows=None):
     c, d = canvas(size)
     w, h = size
@@ -751,6 +808,9 @@ def panel_sports(ctx: Ctx, size, rows=None):
     if not teams:
         text(d, (w / 2, h / 2), "No games in the next few weeks", F("m", 17), anchor="mm")
         return c
+    live = _live_rows(teams)
+    if live and not rows:
+        return _sports_live_first(ctx, c, d, size, live, teams)
     per = rows or max(1, min(4, len(teams)))
     live = _live_rows(teams)
     if len(live) >= 2 or len(live) * 2 >= per:
