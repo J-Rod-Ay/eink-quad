@@ -840,7 +840,17 @@ def panel_sports(ctx: Ctx, size, rows=None):
         per = rows or max(1, min(4, len(teams)))
     else:
         teams = live + [r for r in teams if not r.live]
-    pages = [teams[i:i + per] for i in range(0, len(teams), per)]
+    if not rows:   # fit as many rows as the tile holds (~60px each), up to 6
+        per = max(per, min(6, len(teams), int((h - 6) // 60)))
+    # Finals from the last day or so stay on EVERY page (Zev: past scores must show);
+    # only the remaining upcoming rows rotate underneath them.
+    pin = [r for r in teams if not r.live and r.fresh_result][:max(0, per - 1)]
+    rest = [r for r in teams if r not in pin]
+    room = per - len(pin)
+    if pin and len(pin) + len(rest) > per and room > 0:
+        pages = [pin + rest[i:i + room] for i in range(0, len(rest), room)]
+    else:
+        pages = [teams[i:i + per] for i in range(0, len(teams), per)]
     pg = pages[ctx.cycle % len(pages)]
     rh = (h - 6) / per
     y = 3
