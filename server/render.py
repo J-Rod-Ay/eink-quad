@@ -686,12 +686,27 @@ def _sport(r):
     return sources.TEAMS.get(r.key, ("", ""))[1]
 
 
+def _gsc(g):
+    """'3–2', never 'None–None' (scores not posted yet read as 0-0 once live)."""
+    if g.us is None and g.them is None:
+        return "0–0" if g.state == "in" else "–"
+    return f"{'' if g.us is None else g.us}–{'' if g.them is None else g.them}"
+
+
+LIVE_FIRST = ("devils",)   # Zev: Devils lead the board when they're on
+
+
+def _live_rows(teams):
+    live = [r for r in teams if r.live]
+    return sorted(live, key=lambda r: (0 if r.key in LIVE_FIRST else 1))
+
+
 def _team_lines(r, cfg=None):
     """(badge, primary, secondary) for one TeamRow."""
     cfg = cfg or {}
 
     def score(g):
-        return f"{g.us}–{g.them}"
+        return _gsc(g)
 
     def vs(g, name=True):
         who = g.opp_name if name else g.opp
@@ -723,8 +738,8 @@ def _team_lines(r, cfg=None):
             bits.append(g.tv)
         odds = _odds_bits(g, g.abbr, cfg, _sport(r))
         bits += odds
-        if r.last and not g.note and not odds:
-            bits.append(f"last {r.last.result} {score(r.last)} {r.last.opp}")
+        if r.last:   # past score fills the line (Zev: no empty sports)
+            bits.insert(0, f"Last {r.last.result} {score(r.last)} {r.last.opp}")
         return None, prim, " · ".join(bits)
     return None, "No games scheduled", ""
 
@@ -737,6 +752,13 @@ def panel_sports(ctx: Ctx, size, rows=None):
         text(d, (w / 2, h / 2), "No games in the next few weeks", F("m", 17), anchor="mm")
         return c
     per = rows or max(1, min(4, len(teams)))
+    live = _live_rows(teams)
+    if len(live) >= 2 or len(live) * 2 >= per:
+        # several teams on at once: the panel is all live games, no stale finals
+        teams = live
+        per = rows or max(1, min(4, len(teams)))
+    else:
+        teams = live + [r for r in teams if not r.live]
     pages = [teams[i:i + per] for i in range(0, len(teams), per)]
     pg = pages[ctx.cycle % len(pages)]
     rh = (h - 6) / per
@@ -1286,9 +1308,10 @@ def panel_scoreboard(ctx: Ctx, size):
     """Corner version: the live game (or last final) as a two-line board, then what's next."""
     c, d = canvas(size)
     w, h = size
-    live = [r for r in ctx.teams if r.live]
+    live = _live_rows(ctx.teams)
     if live:
-        r = live[ctx.cycle % len(live)]
+        # Devils pinned on top when live; others rotate under it
+        r = live[0] if live[0].key in LIVE_FIRST else live[ctx.cycle % len(live)]
         g = r.live
         pill(d, 10, 7, "LIVE", F("csb", 15), h=20)
         hd = g.detail
@@ -1331,6 +1354,22 @@ def panel_scoreboard(ctx: Ctx, size):
     if foot:
         text(d, (12, y + 2), ellipsize(d, foot, F("cm", 16), w - 24), F("cm", 16))
         y += 22
+    others = [t for t in live if t is not r] if live else []
+    for t in others:   # every other live game, compact, before anything else
+        if y + 20 > h:
+            break
+        text(d, (12, y + 2), ellipsize(d, f"LIVE {t.label} {_gsc(t.live)} {'vs' if t.live.home else 'at'} {t.live.opp} · {t.live.detail}",
+                                       F("csb", 16), w - 24), F("csb", 16))
+        y += 20
+    if len(live) < 3:   # only a game or two on: recent finals fill the rest
+        fin = sorted(((t, x) for t in ctx.teams for x in (t.recent or ([t.last] if t.last else [])) if x is not g),
+                     key=lambda p: -p[1].start)
+        for t, x in fin:
+            if y + 44 > h:
+                break
+            text(d, (12, y + 2), ellipsize(d, f"{t.label} {x.result} {_gsc(x)} {'vs' if x.home else 'at'} {x.opp} · {_sday(x.start)}",
+                                           F("cm", 16), w - 24), F("cm", 16))
+            y += 20
     if not live:
         nx = sorted((t for t in ctx.teams if t.next), key=lambda t: t.next.start)
         if nx and y + 20 <= h:
@@ -1649,7 +1688,7 @@ def strip(ctx: Ctx):
 def _next_up(ctx):
     for r in ctx.teams:
         if r.live:
-            return f"{r.label} playing now: {r.live.us}–{r.live.them} {r.live.detail}"
+            return f"{r.label} playing now: {_gsc(r.live)} {r.live.detail}"
     for r in ctx.teams:
         if r.next and r.next.start - ctx.now < 12 * 3600:
             return f"{r.label} {when(r.next.start, r.next.time_tbd).lower()} vs {r.next.opp_name}"
@@ -1895,7 +1934,7 @@ def detail_sports(ctx, size):
         if r.live:
             g = r.live
             xx = pill(d, x, y + 4, "LIVE", F("cb", 20), h=28) + 10
-            text(d, (xx, y + 2), f"{g.us}–{g.them} " + ("vs " if g.home else "at ") + g.opp_name, F("sb", 24))
+            text(d, (xx, y + 2), _gsc(g) + " " + ("vs " if g.home else "at ") + g.opp_name, F("sb", 24))
             text(d, (x, y + 38), g.detail + (f" · {g.tv}" if g.tv else ""), F("m", 17))
         else:
             if r.last:
@@ -1903,7 +1942,7 @@ def detail_sports(ctx, size):
                 if paste_logo(c, g.opp_logo, x, y + 4, 28, ctx.cfg):
                     x += 36
                 xx = pill(d, x, y + 6, g.result or "–", F("cb", 18), h=24) + 8
-                s = f"{g.us}–{g.them} " + ("vs " if g.home else "at ") + g.opp_name
+                s = _gsc(g) + " " + ("vs " if g.home else "at ") + g.opp_name
                 text(d, (xx, y + 4), s, F("sb", 21))
                 dt = time.strftime("%a %b ", time.localtime(g.start)) + str(time.localtime(g.start).tm_mday)
                 if g.ats and ctx.cfg.get("odds", True) and g.odds.spread_us is not None and _sport(r) not in ("hockey", "baseball"):

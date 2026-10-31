@@ -497,11 +497,40 @@ def _fetch_team(key):
             pass
     uniq = {}
     for g in games:
-        uniq[(round(g.start / 60), g.opp)] = g
+        k = (round(g.start / 60), g.opp)
+        old = uniq.get(k)
+        # never let a score-less copy (team page nextEvent) replace a scored one
+        if old is not None and g.us is None and old.us is not None:
+            continue
+        uniq[k] = g
     out = sorted(uniq.values(), key=lambda g: g.start)
+    if any(g.state == "in" and (g.us is None or g.them is None) for g in out) or any(
+            g.state == "pre" and g.start <= time.time() for g in out):
+        try:
+            _backfill_live(key, out)
+        except Exception as e:
+            print(f"[live backfill] {key}: {e}", flush=True)
     for g in out:
         g.our_logo = team_logo or g.our_logo
     return out
+
+
+def _backfill_live(key, games):
+    """Team pages/schedules can carry a live game without scores (the 'None-None'
+    bug). The league scoreboard always has them: patch score/state/detail by event id."""
+    _, sport, league, _ = TEAMS[key]
+    params = {"groups": "50"} if "college" in league else None
+    sb = _espn(f"https://site.api.espn.com/apis/site/v2/sports/{sport}/{league}/scoreboard", params)
+    by_id = {str(e.get("id")): e for e in sb.get("events", [])}
+    for i, g in enumerate(games):
+        e = by_id.get(g.event_id)
+        if not e:
+            continue
+        ng = _parse_event(key, e, g.record)
+        if ng.state == "pre" and g.state != "pre":
+            continue
+        for f in ("state", "detail", "us", "them"):
+            setattr(g, f, getattr(ng, f))
 
 
 _teams: dict[str, Cached] = {}
@@ -571,6 +600,7 @@ class TeamRow:
     next: Game | None = None     # next scheduled
     logo: str = ""
     news: str = ""               # latest team-specific headline (sports page)
+    recent: list = field(default_factory=list)   # last few finals, newest first (filler)
 
     @property
     def fresh_result(self):
@@ -712,6 +742,7 @@ def sports(cfg, force=False):
         row.live = next((g for g in games if g.state == "in"), None)
         done = [g for g in games if g.state == "post"]
         row.last = done[-1] if done else None
+        row.recent = [g for g in reversed(done) if g.us is not None][:3]
         row.next = next((g for g in games if g.state == "pre" and g.start > now - 3 * 3600), None)
         if row.live:
             live.append(key)
@@ -728,7 +759,7 @@ def sports(cfg, force=False):
                     attach_odds(key, row.next)
             except Exception as e:
                 print(f"[odds] {key}: {e}", flush=True)
-        if row.live or row.fresh_result or (row.next and row.next.start - now < horizon) or cfg.get("show_idle"):
+        if row.live or row.fresh_result or row.recent or (row.next and row.next.start - now < horizon) or cfg.get("show_idle"):
             rows.append(row)
     rows.sort(key=TeamRow.sort_key)
     # one headline per row, never the same one twice (Gators FB + hoops share team id 57)
