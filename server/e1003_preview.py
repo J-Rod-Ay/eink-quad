@@ -19,6 +19,8 @@ CFG = {"lat": LAT, "lon": LON, "feeds": ["world", "us", "markets"], "tickers": [
        "teams": list(CUSTOM), "radar_nm": 25,
        "layout": "thirds", "slots": ["shabbat", "newsletter", "weather", "news", "trips", "sports", "scoreboard"]}
 now = time.time()
+if os.environ.get("PREVIEW_AT"):     # e.g. "2026-11-01 15:30" local: drives the layout mode
+    now = time.mktime(time.strptime(os.environ["PREVIEW_AT"], "%Y-%m-%d %H:%M"))
 
 
 def tryit(fn, default):
@@ -66,20 +68,40 @@ ctx = R.Ctx(now=now, cfg=CFG, weather=wx, heads=heads, quotes=qs, teams=teams, f
             recent=[], day_count=12, shabbat=sh, calendar=cal, trips=[trip], shopping=shop,
             brief="E1003 home: left Shabbat + newsletter, middle weather/markets/trips, right sports.",
             indoor_f=70.5, indoor_rh=44, battery=86, updated=now, shul=shul)
-if os.environ.get("GAMEDAY"):    # force a live fixture: Devils + Nets on now
-    from dataclasses import replace as _rp
-    live = {"devils": ("NYR", "Rangers", True, "2nd 8:41", 2, 1, "MSG"), "nets": ("BOS", "Celtics", False, "3rd 4:12", 78, 81, "YES")}
+from dataclasses import replace as _rp
+LIVE = {"devils": ("NYR", "Rangers", True, "2nd 8:41", 2, 1, "MSG"), "nets": ("BOS", "Celtics", False, "3rd 4:12", 78, 81, "YES"),
+        "jets": ("LV", "Raiders", True, "Q3 6:02", 17, 13, "CBS")}
+for k in (os.environ.get("GAMEDAY") or "").split(","):   # GAMEDAY=devils,nets fakes those teams live
     for r in teams:
-        if r.key in live:
-            o, on, hm_, det, us, th, tv = live[r.key]
-            r.live = S.Game(team=r.label, abbr=r.key[:3].upper(), opp=o, opp_name=on, home=hm_, start=now - 5400,
+        if r.key == k and k in LIVE:
+            o, on, hm_, det, us, th, tv = LIVE[k]
+            r.live = S.Game(team=r.label, abbr=k[:3].upper(), opp=o, opp_name=on, home=hm_, start=now - 5400,
                             state="in", detail=det, us=us, them=th, tv=tv, record=r.record)
-    ctx.teams = teams
-print("game day:", R.game_day(ctx))
+if R.nfl_day(now):
+    sl = tryit(lambda: S.league_slate(), [])
+    if os.environ.get("NFL_FAKE"):   # mid-slate Sunday: 1pm games live, early finals, late games to play
+        import random
+        rnd = random.Random(7)
+        for i, g in enumerate(sl):
+            if g.away == "NYJ" or g.home == "NYJ":
+                us_h = g.home == "NYJ"
+                g.state, g.detail = "in", "3rd 6:02"
+                g.home_score, g.away_score = (17, 13) if us_h else (13, 17)
+            elif i < 6:
+                g.state, g.detail = "in", rnd.choice(["3rd 2:11", "4th 9:40", "2nd 0:31", "3rd 11:05"])
+                g.away_score, g.home_score = rnd.randint(3, 31), rnd.randint(3, 31)
+            elif i < 9:
+                g.state, g.detail = "post", "Final"
+                g.away_score, g.home_score = rnd.randint(6, 38), rnd.randint(6, 38)
+        o = {"in": 0, "post": 1, "pre": 2}
+        sl.sort(key=lambda g: (o[g.state], g.start))
+    ctx.league = sl
+ctx.teams = teams
+print("mode:", R.home_mode(ctx))
 g = R.compose_gray(ctx)
 assert g.size == (1872, 1404), g.size
 g.save(out)
 ctx.page = "newsletter"
 R.compose_gray(ctx).save(out.replace(".png", "-detail.png"))
 R.compose(ctx).save(out.replace(".png", "-1bit.png"))
-print("wrote", out, g.size, "slots:", R.home_layout(ctx)[1])
+print("wrote", out, g.size, "mode:", R.home_mode(ctx), R.home_layout(ctx)[1])

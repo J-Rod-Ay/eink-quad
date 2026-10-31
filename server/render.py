@@ -461,6 +461,7 @@ class Ctx:
     rot_step: int = 0             # slot_rotation position (advances on the regular beat)
     gallery: dict = field(default_factory=dict)    # gallery.py data: {"onthisday": {...}, "wire": [...]}
     gallery_offset: int = 0       # button steps through gallery modes
+    league: list = field(default_factory=list)     # sources.SlateGame: whole NFL scoreboard on slate days
 
 
 def _deg(v):
@@ -1704,11 +1705,65 @@ def panel_newsletter(ctx: Ctx, size):
     return c
 
 
-PANELS = {"weather": panel_weather, "news": panel_news, "sports": panel_sports, "sky": panel_sky,
+MY_NFL = ("NYJ",)   # Zev's team on the league board: drawn inverted
+
+
+def panel_league(ctx: Ctx, size):
+    """Whole-league NFL board for slate nights: live first, then finals, then upcoming; dense grid."""
+    c, d = canvas(size)
+    w, h = size
+    games = list(ctx.league or [])
+    nlive = sum(g.state == "in" for g in games)
+    nfin = sum(g.state == "post" for g in games)
+    text(d, (10, 4), "NFL SCOREBOARD", F("cb", 18))
+    text(d, (w - 10, 4), f"{nlive} live · {nfin} final · {len(games) - nlive - nfin} to play", F("csb", 16), anchor="ra")
+    d.line((6, 26, w - 6, 26), fill=INK, width=2)
+    if not games:
+        text(d, (w // 2, h // 2), "No NFL games on the board", F("csb", 20), anchor="mm")
+        return c
+    cols = 4 if len(games) <= 12 else 5
+    rows = max(1, min(3 if cols == 5 else 4, (len(games) + cols - 1) // cols))
+    games = games[:cols * rows]
+    cw, top = w / cols, 30
+    rh = (h - top) / rows
+    fs = 24 if rh >= 80 else 21
+    for i, g in enumerate(games):
+        x0, y0 = int((i % cols) * cw), int(top + (i // cols) * rh)
+        x1 = int(x0 + cw)
+        ours = g.away in MY_NFL or g.home in MY_NFL
+        fg = INK
+        if ours:
+            d.rectangle((x0 + 3, y0 + 2, x1 - 3, int(y0 + rh) - 3), fill=INK)
+            fg = PAPER
+        if i % cols:
+            d.line((x0, y0 + 6, x0, int(y0 + rh) - 6), fill=INK, width=1)
+        line_h = (rh - 22) / 2
+        for j, (ab, scr, oth) in enumerate(((g.away, g.away_score, g.home_score), (g.home, g.home_score, g.away_score))):
+            y = y0 + 4 + j * line_h
+            win = g.state == "post" and scr is not None and oth is not None and scr > oth
+            f = F("cb" if (win or g.state == "in") else "csb", fs)
+            text(d, (x0 + 12, y), ab, f, fill=fg)
+            if scr is not None:
+                text(d, (x1 - 12, y), str(scr), f, fill=fg, anchor="ra")
+        st = g.detail
+        if g.state == "pre":
+            st = time.strftime("%a %-I:%M", time.localtime(g.start)) + (f" {g.tv}" if g.tv else "")
+        y = int(y0 + rh) - 20
+        if g.state == "in" and not ours:
+            pill(d, x0 + 10, y - 1, "LIVE", F("csb", 13), h=17)
+            text(d, (x1 - 12, y), ellipsize(d, st, F("csb", 15), cw - 70), F("csb", 15), fill=fg, anchor="ra")
+        else:
+            text(d, (x0 + 12, y), ellipsize(d, st, F("cm", 15), cw - 24), F("cm", 15), fill=fg)
+        if (i // cols) < rows - 1:
+            d.line((x0 + 8, int(y0 + rh), x1 - 8, int(y0 + rh)), fill=INK, width=1)
+    return c
+
+
+PANELS = {"league": panel_league, "weather": panel_weather, "news": panel_news, "sports": panel_sports, "sky": panel_sky,
           "shabbat": panel_shabbat, "calendar": panel_calendar, "trips": panel_trips,
           "scoreboard": panel_scoreboard, "shopping": panel_shopping,
           "newsletter": panel_newsletter}
-CORNER_PANELS = list(PANELS)          # shopping last, so short slot lists never pick it by default
+CORNER_PANELS = [p for p in PANELS if p != "league"]          # shopping last, so short slot lists never pick it by default
 
 
 # ================================================================== chrome
@@ -1807,7 +1862,12 @@ def layout_of(cfg) -> str:
     return lay if lay in LAYOUTS else DEFAULT_LAYOUT
 
 
-GAMEDAY_SLOTS = ["shabbat", "weather", "news", "sports", "scoreboard"]
+NFL_DAYS = (6, 0, 3)          # tm_wday: Sun, Mon, Thu
+SHABBAT_DAYS = (4, 5)         # Fri (day before) + Sat
+
+
+def nfl_day(now) -> bool:
+    return time.localtime(now).tm_wday in NFL_DAYS
 
 
 def game_day(ctx) -> bool:
@@ -1816,30 +1876,65 @@ def game_day(ctx) -> bool:
     return bool(ctx.cfg.get("gameday_takeover", True)) and any(getattr(r, "live", None) for r in (ctx.teams or []))
 
 
+def nfl_slate_on(ctx) -> bool:
+    """Sun/Mon/Thu with league games live, finished today, or kicking off within 3h."""
+    if not (nfl_day(ctx.now) and ctx.league):
+        return False
+    day0 = time.mktime(time.localtime(ctx.now)[:3] + (0, 0, 0, 0, 0, -1))
+    return any(g.state == "in" or (g.state == "post" and g.start >= day0 - 6 * 3600)
+               or (g.state == "pre" and g.start - ctx.now <= 3 * 3600) for g in ctx.league)
+
+
+def home_mode(ctx) -> str:
+    """Zev's layout matrix (thirds/E1003 only):
+       shabbat       Fri-Sat, nothing live        standard thirds (Shabbat + newsletter)
+       shabbat_live  Fri-Sat, followed team live  Shabbat/weather/newsletter column | scores 2/3
+       nfl           Sun/Mon/Thu slate active     weather + my teams on top, whole-league board below
+       live          other days, team live        weather + my finals column | live games 2/3
+       weekday       otherwise                    weather/markets/trips column | my teams 2/3
+    Markets never appear in a game mode."""
+    if layout_of(ctx.cfg) != "thirds" or not ctx.cfg.get("smart_home", True):
+        return "fixed"
+    shab = time.localtime(ctx.now).tm_wday in SHABBAT_DAYS
+    live = game_day(ctx)
+    if shab:
+        return "shabbat_live" if live else "shabbat"
+    if nfl_slate_on(ctx):
+        return "nfl"
+    return "live" if live else "weekday"
+
+
+MODE_SLOTS = {
+    "shabbat_live": ["shabbat", "weather", "newsletter", "sports", "scoreboard"],
+    "nfl": ["weather", "sports", "league"],
+    "live": ["weather", "scoreboard", "sports"],
+    "weekday": ["weather", "news", "trips", "sports", "scoreboard"],
+}
+
+
 def home_layout(ctx):
-    """(boxes, slot names) for the home screen. Thirds + a live game => game-day takeover."""
-    layout = layout_of(ctx.cfg)
-    if layout == "thirds" and game_day(ctx):
-        return slot_boxes("thirds_live"), list(GAMEDAY_SLOTS)
-    return slot_boxes(layout), resolve_slots(ctx)
+    """(boxes, slot names) for the home screen, re-picked every render."""
+    mode = home_mode(ctx)
+    if mode in MODE_SLOTS:
+        return slot_boxes("thirds_" + mode), list(MODE_SLOTS[mode])
+    return slot_boxes(layout_of(ctx.cfg)), resolve_slots(ctx)
 
 
 def slot_boxes(layout="quad"):
     """Slot rectangles in layout units."""
-    if layout == "thirds_live":
-        # Game-day takeover (Zev): scores own the middle+right 2/3 of the screen.
-        # Left column stays compact: Shabbat / weather / markets, a third each.
-        # Newsletter + trips step aside until nothing is live, then thirds returns.
-        xs = [0, W // 3, W]
+    if layout.startswith("thirds_"):
+        x1, x2 = W // 3, 2 * W // 3
         ch = (H - GRID_Y) // 3
-        ys = [GRID_Y, GRID_Y + ch, GRID_Y + 2 * ch, H]
-        return [
-            (xs[0], ys[0], xs[1], ys[1]),  # shabbat
-            (xs[0], ys[1], xs[1], ys[2]),  # weather
-            (xs[0], ys[2], xs[1], ys[3]),  # markets/news
-            (xs[1], ys[0], xs[2], ys[2]),  # sports: live games, 2/3 x 2/3
-            (xs[1], ys[2], xs[2], ys[3]),  # scoreboard: finals / upcoming
-        ]
+        y1, y2 = GRID_Y + ch, GRID_Y + 2 * ch
+        m = layout[7:]
+        if m == "shabbat_live":   # left: shabbat / weather / newsletter; scores own 2/3
+            return [(0, GRID_Y, x1, y1), (0, y1, x1, y2), (0, y2, x1, H), (x1, GRID_Y, W, y2), (x1, y2, W, H)]
+        if m == "weekday":        # left: weather / markets+news / trips; my teams 2/3
+            return [(0, GRID_Y, x1, y1), (0, y1, x1, y2), (0, y2, x1, H), (x1, GRID_Y, W, y2), (x1, y2, W, H)]
+        if m == "live":           # left: weather + my finals/upcoming; live games full height 2/3
+            return [(0, GRID_Y, x1, y1), (0, y1, x1, H), (x1, GRID_Y, W, H)]
+        if m == "nfl":            # top: weather | my teams; bottom 2/3: whole NFL board
+            return [(0, GRID_Y, x1, y1), (x1, GRID_Y, W, y1), (0, y1, W, H)]
     if layout == "thirds":
         # Left column: Shabbat SHORT on top (rows 0-1 = 1/3 body height; times are compact)
         # + newsletter TALL below (rows 1-3 = 2/3 body height, reading room).
@@ -1944,8 +2039,9 @@ def compose_quad(ctx: Ctx, panels: dict | None = None) -> Image.Image:
     for x0, y, x1, _ in boxes:
         if y > GRID_Y:
             d.line((x0 + (6 if x0 == 0 else 0), y, x1 - (6 if x1 >= W else 0), y), fill=INK, width=2)
-    for x in sorted({b[0] for b in boxes if b[0] > 0}):
-        d.line((x - 1, GRID_Y + 6, x - 1, H - 6), fill=INK, width=2)
+    for x0, y0, _, y1 in boxes:   # per-box left edge, so full-width slots (NFL board) aren't cut through
+        if x0 > 0:
+            d.line((x0 - 1, y0 + 6, x0 - 1, y1 - 6), fill=INK, width=2)
     return c
 
 

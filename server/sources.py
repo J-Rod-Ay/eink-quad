@@ -1010,3 +1010,51 @@ def shabbat(cfg, force=False) -> Shabbat | None:
 
 def shabbat_status():
     return _shabbat[_shabbat_last[0]].status()
+
+
+# ---------------------------------------------------------------- league slate
+@dataclass
+class SlateGame:
+    away: str
+    home: str
+    away_score: int | None
+    home_score: int | None
+    state: str          # pre | in | post
+    detail: str         # "Q3 4:12", "Final", "1:00 PM"
+    start: float
+    tv: str = ""
+
+
+_slates: dict[str, Cached] = {}
+
+
+def _fetch_slate(sport, league):
+    d = _espn(f"https://site.api.espn.com/apis/site/v2/sports/{sport}/{league}/scoreboard")
+    out = []
+    for e in d.get("events", []):
+        try:
+            comp = e["competitions"][0]
+            cs = {c.get("homeAway"): c for c in comp.get("competitors", [])}
+            st = comp.get("status", e.get("status", {}))
+            def sc(c):
+                v = c.get("score")
+                return int(v) if v not in (None, "") else None
+            ts = calendar.timegm(time.strptime(e["date"][:16], "%Y-%m-%dT%H:%M"))
+            state = st.get("type", {}).get("state", "pre")
+            tv = ", ".join(n for b in comp.get("broadcasts", []) for n in b.get("names", []))[:8]
+            out.append(SlateGame(away=cs["away"]["team"]["abbreviation"], home=cs["home"]["team"]["abbreviation"],
+                                 away_score=sc(cs["away"]) if state != "pre" else None,
+                                 home_score=sc(cs["home"]) if state != "pre" else None,
+                                 state=state, detail=st.get("type", {}).get("shortDetail", ""), start=ts, tv=tv))
+        except Exception:
+            continue
+    order = {"in": 0, "post": 1, "pre": 2}
+    out.sort(key=lambda g: (order.get(g.state, 3), g.start))
+    return out
+
+
+def league_slate(sport="football", league="nfl", live=False, force=False):
+    """Every game on the league's current scoreboard (ESPN), live -> final -> upcoming."""
+    c = _slates.setdefault(league, Cached(60))
+    c.ttl = 45 if live else 600
+    return c.get(lambda: _fetch_slate(sport, league), force) or []
