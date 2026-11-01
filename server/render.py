@@ -370,9 +370,10 @@ def hm(ts, ampm=True):
     return s + (" AM" if t.tm_hour < 12 else " PM") if ampm else s
 
 
-def when(ts, tbd=False):
-    """Friendly game time: 'Tonight 7:00', 'Tomorrow 1:00 PM', 'Sun 1:00 PM', 'Oct 12'."""
-    now = time.localtime()
+def when(ts, tbd=False, now=None):
+    """Friendly game time: 'Tonight 7:00', 'Tomorrow 1:00 PM', 'Sun 1:00 PM', 'Oct 12'.
+    Relative to `now` (epoch; default: render time), always in local (America/New_York) dates."""
+    now = time.localtime(now if now is not None else time.time())
     t = time.localtime(ts)
     days = (time.mktime(t[:3] + (0, 0, 0, 0, 0, -1)) - time.mktime(now[:3] + (0, 0, 0, 0, 0, -1))) / 86400
     days = round(days)
@@ -1974,12 +1975,15 @@ def game_day(ctx) -> bool:
 
 
 def nfl_slate_on(ctx) -> bool:
-    """Sun/Mon/Thu with league games live, finished today, or kicking off within 3h."""
+    """Sun/Mon/Thu with league games live, finished today, or still to kick off today
+    (Sunday morning already shows the whole slate, not only once the 1 PM games are 3h out)."""
     if not (nfl_day(ctx.now) and ctx.league):
         return False
-    day0 = time.mktime(time.localtime(ctx.now)[:3] + (0, 0, 0, 0, 0, -1))
+    t = time.localtime(ctx.now)
+    day0 = time.mktime(t[:3] + (0, 0, 0, 0, 0, -1))
+    day1 = time.mktime((t.tm_year, t.tm_mon, t.tm_mday + 1, 0, 0, 0, 0, 0, -1))
     return any(g.state == "in" or (g.state == "post" and g.start >= day0 - 6 * 3600)
-               or (g.state == "pre" and g.start - ctx.now <= 3 * 3600) for g in ctx.league)
+               or (g.state == "pre" and (g.start < day1 or g.start - ctx.now <= 3 * 3600)) for g in ctx.league)
 
 
 def home_mode(ctx) -> str:

@@ -500,6 +500,12 @@ class Board:
                 self.redraw("page timeout", major=True)
         self.check_notes()
         self.weekly(now)
+        day = time.strftime("%Y-%m-%d", time.localtime(now))
+        if self.beats.get("day") != day:      # local midnight: refetch everything and redraw so
+            if self.beats.get("day") is not None:   # Today/Tomorrow labels and the Sun NFL mode flip now
+                self.beats.pop("main", None)
+                self.force_full = True
+            self.beats["day"] = day
         if quiet_now():
             return
         iv = max(1, cfg["interval_min"]) * 60
